@@ -55,6 +55,42 @@ import {
   type Approval,
   type AuditEvent,
 } from "./services/demo"
+import {
+  ApiError,
+  apiBaseUrl,
+  approveRequest as approveRequestApi,
+  autoConnectBackend,
+  clearSession,
+  createAgent as createAgentApi,
+  createPolicy as createPolicyApi,
+  downloadAudit,
+  getAgents as getAgentsApi,
+  getApprovals as getApprovalsApi,
+  getAudit as getAuditApi,
+  getOverviewStats,
+  getPolicies as getPoliciesApi,
+  getQuarantine as getQuarantineApi,
+  getWorkspace as getWorkspaceApi,
+  hasStoredSession,
+  login as loginApi,
+  loginDemoBackend,
+  logout as logoutApi,
+  rejectRequest as rejectRequestApi,
+  releaseQuarantine as releaseQuarantineApi,
+  restoreSession,
+  rotateAgentKey as rotateAgentKeyApi,
+  runSimulator as runSimulatorApi,
+  triggerDownload,
+  updateAgent as updateAgentApi,
+  updatePolicy as updatePolicyApi,
+  updateWorkspace as updateWorkspaceApi,
+  verifyAudit as verifyAuditApi,
+  type AgentRecord,
+  type AuditVerification,
+  type OverviewStats,
+  type PolicyRecord,
+  type SessionUser,
+} from "./services/api"
 
 const navigation = [
   { title: "Overview", icon: LayoutDashboard },
@@ -79,15 +115,38 @@ const pageDescriptions: Record<string, string> = {
     "Isolated content that needs your attention before it goes any further.",
   Settings: "Configure your workspace and connect your security modules.",
 }
+const capabilityPermissions: Record<string, string[]> = {
+  documents: ["documents.read"],
+  local_files: ["local_files.read", "files.delete"],
+  system_files: ["system_files.read"],
+  environment: ["environment.read"],
+  terminal: ["terminal.run"],
+  browser: ["browser.read"],
+  email: ["email.send"],
+  dlp: ["dlp.export"],
+  downloads: ["downloads.write"],
+  payments: ["payments.execute"],
+  external_api: ["external_api.call", "mcp.call"],
+}
+const rangePeriods: Record<string, "24h" | "7d" | "30d"> = {
+  "Last 24 hours": "24h",
+  "Last 7 days": "7d",
+  "Last 30 days": "30d",
+}
+function errorMessage(error: unknown) {
+  return error instanceof ApiError || error instanceof Error
+    ? error.message
+    : "AgentShield API request failed"
+}
 
 export default function App() {
   const [page, setPage] = useState("Overview")
   const [workspaceName, setWorkspaceName] = useState("Acme workspace")
   const [workspaceDraft, setWorkspaceDraft] = useState("Acme workspace")
-  const [agents, setAgents] = useState<Agent[]>(initialAgents)
+  const [agents, setAgents] = useState<AgentRecord[]>(initialAgents)
   const [events, setEvents] = useState<AuditEvent[]>(initialEvents)
   const [approvals, setApprovals] = useState<Approval[]>(initialApprovals)
-  const [policies, setPolicies] = useState(policySeed)
+  const [policies, setPolicies] = useState<PolicyRecord[]>(policySeed)
   const [range, setRange] = useState("Last 24 hours")
   const [toast, setToast] = useState("")
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
@@ -119,16 +178,24 @@ export default function App() {
   const [newKey, setNewKey] = useState("")
   const [comment, setComment] = useState("")
   const [quarantined, setQuarantined] = useState([
-    "Untrusted webpage content",
-    "Suspicious PDF attachment",
-    "Unverified download",
+    { id: "demo-0", label: "Untrusted webpage content" },
+    { id: "demo-1", label: "Suspicious PDF attachment" },
+    { id: "demo-2", label: "Unverified download" },
   ])
   const [approvalTab, setApprovalTab] = useState("Pending")
   const [loggedIn, setLoggedIn] = useState(true)
   const [loginEmail, setLoginEmail] = useState("admin@agentshield.demo")
   const [loginPassword, setLoginPassword] = useState("")
   const [loginError, setLoginError] = useState("")
+  const [backendMode, setBackendMode] = useState(false)
+  const [sessionUser, setSessionUser] = useState<SessionUser | null>(null)
+  const [stats, setStats] = useState<OverviewStats | null>(null)
+  const [auditVerification, setAuditVerification] =
+    useState<AuditVerification | null>(null)
   const pending = approvals.filter((a) => a.status === "Pending").length
+  const selectedAgentRecord = agents.find(
+    (agent) => agent.name === selectedAgent,
+  )
   function notify(message: string) {
     setToast(message)
     clearTimeout(toastTimer.current)
@@ -142,6 +209,105 @@ export default function App() {
     setAuditPage(1)
     window.scrollTo({ top: 0, behavior: "smooth" })
   }
+  function resetDemoState() {
+    setAgents(initialAgents)
+    setEvents(initialEvents)
+    setApprovals(initialApprovals)
+    setPolicies(policySeed)
+    setQuarantined([
+      { id: "demo-0", label: "Untrusted webpage content" },
+      { id: "demo-1", label: "Suspicious PDF attachment" },
+      { id: "demo-2", label: "Unverified download" },
+    ])
+    setWorkspaceName("Acme workspace")
+    setWorkspaceDraft("Acme workspace")
+    setStats(null)
+    setAuditVerification(null)
+    setPermissions({})
+    setScopes({})
+    setResults({})
+  }
+  async function loadBackendData(user?: SessionUser | null) {
+    const [agentList, approvalList, auditResult, policyList, quarantineList, workspace] =
+      await Promise.all([
+        getAgentsApi(),
+        getApprovalsApi(),
+        getAuditApi(),
+        getPoliciesApi(),
+        getQuarantineApi(),
+        getWorkspaceApi(),
+      ])
+    setAgents(agentList)
+    if (!agentList.some((agent) => agent.name === selectedAgent)) {
+      setSelectedAgent(agentList[0]?.name || "research-agent")
+    }
+    setApprovals(approvalList)
+    setEvents(auditResult.items)
+    setPolicies(policyList)
+    setQuarantined(
+      quarantineList.map((item) => ({
+        id: item.id,
+        label: item.preview || item.reason || item.tool,
+      })),
+    )
+    setWorkspaceName(workspace.name)
+    setWorkspaceDraft(workspace.name)
+    if (user) setSessionUser(user)
+    setBackendMode(true)
+  }
+  async function refreshAudit() {
+    if (!backendMode) return
+    try {
+      const result = await getAuditApi()
+      setEvents(result.items)
+    } catch {
+      // Keep the last known audit view when a refresh fails.
+    }
+  }
+  useEffect(() => {
+    let cancelled = false
+    async function bootstrap() {
+      let user: SessionUser | null = await restoreSession()
+      if (!user && autoConnectBackend) {
+        try {
+          user = (await loginDemoBackend()).user
+        } catch {
+          user = null
+        }
+      }
+      if (!user || cancelled) return
+      try {
+        await loadBackendData(user)
+      } catch {
+        if (!cancelled) {
+          clearSession()
+          setBackendMode(false)
+          setSessionUser(null)
+        }
+      }
+    }
+    bootstrap()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+  useEffect(() => {
+    if (!backendMode) {
+      setStats(null)
+      return
+    }
+    let cancelled = false
+    getOverviewStats(rangePeriods[range] || "24h")
+      .then((result) => {
+        if (!cancelled) setStats(result)
+      })
+      .catch(() => {
+        if (!cancelled) setStats(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [backendMode, range])
   useEffect(() => {
     function keydown(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
@@ -183,8 +349,33 @@ export default function App() {
       ...old,
     ])
   }
-  function reviewApproval(status: string) {
+  async function reviewApproval(status: string) {
     if (!selectedApproval) return
+    if (backendMode) {
+      try {
+        if (status === "Approved") {
+          await approveRequestApi(selectedApproval.id, comment)
+        } else {
+          await rejectRequestApi(selectedApproval.id, comment)
+        }
+        const [approvalList, auditResult] = await Promise.all([
+          getApprovalsApi(),
+          getAuditApi(),
+        ])
+        setApprovals(approvalList)
+        setEvents(auditResult.items)
+        setSelectedApproval(null)
+        setComment("")
+        notify(
+          status === "Approved"
+            ? "Request approved. A single-use token was issued; no tool was executed."
+            : "Request rejected. The agent cannot use this action.",
+        )
+      } catch (error) {
+        notify(errorMessage(error))
+      }
+      return
+    }
     setApprovals((old) =>
       old.map((a) => (a.id === selectedApproval.id ? { ...a, status } : a)),
     )
@@ -205,6 +396,29 @@ export default function App() {
   }
   async function runSimulation(ids: string[]) {
     setRunning(true)
+    if (backendMode) {
+      try {
+        const response = await runSimulatorApi(ids)
+        const next: Record<string, ReturnType<typeof simulate>> = {}
+        for (const item of response.items) {
+          next[item.id] = {
+            decision: item.actual as AuditEvent["decision"],
+            reason: item.reason,
+            executed: item.executed,
+          }
+        }
+        setResults((old) => ({ ...old, ...next }))
+        await refreshAudit()
+        notify(
+          `${response.passed} of ${response.total} scenarios passed. No real tools were executed.`,
+        )
+      } catch (error) {
+        notify(errorMessage(error))
+      } finally {
+        setRunning(false)
+      }
+      return
+    }
     for (const id of ids) {
       await new Promise((resolve) => setTimeout(resolve, 230))
       const scenario = scenarios.find((s) => s.id === id)!
@@ -225,10 +439,28 @@ export default function App() {
       } completed. No adapters executed.`,
     )
   }
-  function createAgent() {
+  async function createAgent() {
     if (!agentName.trim()) return
     if (agents.some((a) => a.name === agentName.trim())) {
       notify("An agent with this name already exists.")
+      return
+    }
+    if (backendMode) {
+      try {
+        const result = await createAgentApi(agentName.trim(), agentRole)
+        const created = {
+          ...result.agent,
+          color: "violet",
+          initials: agentName.slice(0, 2).toUpperCase(),
+        }
+        setAgents((old) => [...old, created])
+        setAgentName("")
+        setNewKey(result.api_key)
+        setModal("Agent created")
+        notify("Agent created. API key issued once.")
+      } catch (error) {
+        notify(errorMessage(error))
+      }
       return
     }
     setAgents((old) => [
@@ -246,6 +478,157 @@ export default function App() {
     setAgentName("")
     setNewKey(`as_demo_${crypto.randomUUID()}`)
     setModal("Agent created")
+  }
+  function capabilityEnabled(key: string, index: number) {
+    const stateKey = `${selectedAgent}:${key}`
+    if (permissions[stateKey] !== undefined) return permissions[stateKey]
+    if (backendMode && selectedAgentRecord?.permissions) {
+      return capabilityPermissions[key].every((permission) =>
+        selectedAgentRecord.permissions!.includes(permission),
+      )
+    }
+    return [0, 1, 5, 7].includes(index)
+  }
+  async function saveCapability(
+    capabilityKey: string,
+    capabilityName: string,
+    enabled: boolean,
+  ) {
+    const stateKey = `${selectedAgent}:${capabilityKey}`
+    setPermissions((old) => ({ ...old, [stateKey]: enabled }))
+    notify(
+      `${capabilityName} ${enabled ? "enabled" : "disabled"} for ${selectedAgent}.`,
+    )
+    if (!backendMode || !selectedAgentRecord) return
+    const required = capabilityPermissions[capabilityKey]
+    const current = selectedAgentRecord.permissions || []
+    const next = enabled
+      ? Array.from(new Set([...current, ...required]))
+      : current.filter((permission) => !required.includes(permission))
+    try {
+      const updated = await updateAgentApi(selectedAgentRecord.id, {
+        permissions: next,
+      })
+      setAgents((old) =>
+        old.map((agent) =>
+          agent.id === updated.id
+            ? {
+                ...agent,
+                ...updated,
+                color: agent.color,
+                initials: agent.initials,
+              }
+            : agent,
+        ),
+      )
+    } catch (error) {
+      setPermissions((old) => ({ ...old, [stateKey]: !enabled }))
+      notify(errorMessage(error))
+    }
+  }
+  async function changeAgentStatus(agent: Agent, status: "Active" | "Disabled") {
+    if (!backendMode) {
+      setAgents((old) =>
+        old.map((item) =>
+          item.id === agent.id ? { ...item, status } : item,
+        ),
+      )
+      notify("Agent status updated in demo.")
+      return
+    }
+    try {
+      const updated = await updateAgentApi(agent.id, { status })
+      setAgents((old) =>
+        old.map((item) =>
+          item.id === updated.id
+            ? {
+                ...item,
+                ...updated,
+                color: item.color,
+                initials: item.initials,
+              }
+            : item,
+        ),
+      )
+      notify(`Agent ${status === "Active" ? "enabled" : "disabled"}.`)
+    } catch (error) {
+      notify(errorMessage(error))
+    }
+  }
+  async function rotateKey(agent: Agent) {
+    if (!backendMode) {
+      setNewKey(`as_demo_${crypto.randomUUID()}`)
+      setModal("New demo key")
+      return
+    }
+    try {
+      const result = await rotateAgentKeyApi(agent.id)
+      setNewKey(result.api_key)
+      setModal("New API key")
+      notify("Agent API key rotated. The previous key is revoked.")
+    } catch (error) {
+      notify(errorMessage(error))
+    }
+  }
+  async function releaseQuarantinedItem(id: string, comment: string) {
+    if (backendMode && !id.startsWith("demo-")) {
+      try {
+        await releaseQuarantineApi(id, comment)
+      } catch (error) {
+        notify(errorMessage(error))
+        return false
+      }
+    }
+    setQuarantined((old) => old.filter((item) => item.id !== id))
+    return true
+  }
+  async function verifyAuditChain() {
+    if (backendMode) {
+      try {
+        setAuditVerification(await verifyAuditApi())
+      } catch (error) {
+        notify(errorMessage(error))
+      }
+    } else {
+      setAuditVerification(null)
+    }
+    setModal("Audit integrity")
+  }
+  async function exportAudit(format: "json" | "csv") {
+    if (backendMode) {
+      try {
+        const blob = await downloadAudit(format)
+        triggerDownload(blob, `agentshield-audit.${format}`)
+        notify("Sanitized audit export downloaded.")
+      } catch (error) {
+        notify(errorMessage(error))
+      }
+      return
+    }
+    if (format === "json") {
+      exportFile(
+        "agentshield-audit.json",
+        JSON.stringify(visibleEvents, null, 2),
+      )
+      return
+    }
+    exportFile(
+      "agentshield-audit.csv",
+      "id,agent,tool,decision,risk,time\n" +
+        visibleEvents
+          .map((event) =>
+            [
+              event.id,
+              event.agent,
+              event.tool,
+              event.decision,
+              event.risk,
+              event.time,
+            ].join(","),
+          )
+          .join("\n"),
+      "text/csv",
+    )
   }
   const visibleEvents = events.filter(
     (e) =>
@@ -265,12 +648,59 @@ export default function App() {
       category: "Agent",
       target: "Agents",
     })),
-    ...policySeed.map((p) => ({
+    ...policies.map((p) => ({
       title: p.name,
       category: "Policy",
       target: "Policy Manager",
     })),
   ].filter((s) => s.title.toLowerCase().includes(globalSearch.toLowerCase()))
+  async function handleLogin() {
+    setLoginError("")
+    try {
+      const result = await loginApi(loginEmail, loginPassword)
+      await loadBackendData(result.user)
+      setLoggedIn(true)
+      notify("Connected to the AgentShield backend.")
+      return
+    } catch (error) {
+      const isDemoCredentials =
+        loginEmail === "admin@agentshield.demo" &&
+        loginPassword === "demo-password"
+      if (!isDemoCredentials) {
+        setLoginError(errorMessage(error))
+        return
+      }
+      try {
+        const result = await loginDemoBackend()
+        await loadBackendData(result.user)
+        setLoggedIn(true)
+        notify("Connected to the AgentShield backend.")
+        return
+      } catch {
+        clearSession()
+        setBackendMode(false)
+        setSessionUser(null)
+        resetDemoState()
+        setLoggedIn(true)
+        notify("Backend unavailable. Safe demo mode is active.")
+      }
+    }
+  }
+  async function signOut() {
+    if (backendMode) {
+      try {
+        await logoutApi()
+      } catch {
+        clearSession()
+      }
+    }
+    setBackendMode(false)
+    setSessionUser(null)
+    resetDemoState()
+    setLoggedIn(false)
+    setProfileOpen(false)
+    setLoginPassword("")
+  }
 
   if (!loggedIn)
     return (
@@ -285,13 +715,7 @@ export default function App() {
           <form
             onSubmit={(e) => {
               e.preventDefault()
-              if (
-                loginEmail === "admin@agentshield.demo" &&
-                loginPassword === "demo-password"
-              ) {
-                setLoggedIn(true)
-                setLoginError("")
-              } else setLoginError("Use the demo credentials shown below.")
+              handleLogin()
             }}
           >
             <label>
@@ -319,7 +743,7 @@ export default function App() {
             </Button>
           </form>
           <div className="demo-login-note">
-            Demo only · No authentication server
+            Demo fallback available when the backend is offline
             <br />
             <code>admin@agentshield.demo</code>
             <br />
@@ -328,6 +752,10 @@ export default function App() {
         </div>
       </div>
     )
+
+  const quarantinedItem = modal?.startsWith("Release: ")
+    ? quarantined.find((item) => item.id === modal.replace("Release: ", ""))
+    : undefined
 
   return (
     <div className="app-shell">
@@ -388,12 +816,14 @@ export default function App() {
           <div className="gateway-card">
             <div>
               <i className="live-dot" />
-              <strong>Demo gateway ready</strong>
+              <strong>
+                {backendMode ? "Gateway connected" : "Demo gateway ready"}
+              </strong>
               <ShieldCheck size={14} />
             </div>
             <p>Every action. Authorized.</p>
             <span>
-              DEMO MODE <i />
+              {backendMode ? "LIVE MODE" : "DEMO MODE"} <i />
               v1.0.0
             </span>
           </div>
@@ -421,8 +851,8 @@ export default function App() {
           >
             <span className="profile-avatar">JD</span>
             <span>
-              <strong>Jamie Davis</strong>
-              <small>Workspace admin</small>
+              <strong>{sessionUser?.email || "Jamie Davis"}</strong>
+              <small>{sessionUser?.role || "Workspace admin"}</small>
             </span>
             <ChevronDown size={14} />
           </div>
@@ -444,7 +874,9 @@ export default function App() {
             <strong>{page === "Overview" ? "Overview" : page}</strong>
           </div>
           <div className="topbar-actions">
-            <span className="demo-indicator">Demo data</span>
+            <span className="demo-indicator">
+              {backendMode ? "Live backend" : "Demo data"}
+            </span>
             <button
               className="global-search"
               onClick={() => setSearchOpen(true)}
@@ -484,6 +916,8 @@ export default function App() {
               setRange={setRange}
               pending={pending}
               onEvent={setSelectedEvent}
+              stats={stats}
+              connected={backendMode}
             />
           ) : (
             <>
@@ -511,18 +945,11 @@ export default function App() {
                     </Button>
                   ) : page === "Audit Logs" ? (
                     <>
-                      <Button onClick={() => setModal("Audit integrity")}>
+                      <Button onClick={() => verifyAuditChain()}>
                         <ShieldCheck size={15} />
                         Verify integrity
                       </Button>
-                      <Button
-                        onClick={() =>
-                          exportFile(
-                            "agentshield-audit.json",
-                            JSON.stringify(visibleEvents, null, 2),
-                          )
-                        }
-                      >
+                      <Button onClick={() => exportAudit("json")}>
                         <ArrowDownToLine size={15} />
                         Export JSON
                       </Button>
@@ -677,15 +1104,16 @@ export default function App() {
                     <ShieldCheck size={17} />
                     <span>
                       Permissions are scoped to <strong>{selectedAgent}</strong>
-                      . Missing permissions deny access. Changes are local to
-                      this demo.
+                      . Missing permissions deny access.{" "}
+                      {backendMode
+                        ? "Changes are persisted to the connected backend."
+                        : "Changes are local to this demo."}
                     </span>
                   </div>
                   <div className="capability-grid">
                     {capabilities.map((c, i) => {
                       const key = `${selectedAgent}:${c.key}`
-                      const enabled =
-                        permissions[key] ?? [0, 1, 5, 7].includes(i)
+                      const enabled = capabilityEnabled(c.key, i)
                       return (
                         <div
                           className={`capability-card ${
@@ -703,17 +1131,9 @@ export default function App() {
                             </span>
                             <Toggle
                               checked={enabled}
-                              onChange={() => {
-                                setPermissions((p) => ({
-                                  ...p,
-                                  [key]: !enabled,
-                                }))
-                                notify(
-                                  `${c.name} ${
-                                    enabled ? "disabled" : "enabled"
-                                  } for ${selectedAgent}.`,
-                                )
-                              }}
+                              onChange={() =>
+                                saveCapability(c.key, c.name, !enabled)
+                              }
                               label={`Enable ${c.name}`}
                             />
                           </div>
@@ -748,7 +1168,12 @@ export default function App() {
                     </div>
                     <div>
                       <Terminal size={16} />
-                      Engine <strong>Local demo evaluator</strong>
+                      Engine{" "}
+                      <strong>
+                        {backendMode
+                          ? "Server-side policy engine"
+                          : "Local demo evaluator"}
+                      </strong>
                     </div>
                     <div>
                       <i className="live-dot" />
@@ -789,8 +1214,9 @@ export default function App() {
                   <div className="notice">
                     <CircleHelp size={16} />
                     <span>
-                      Policy changes here demonstrate UI behavior only. OPA and
-                      server-side policy enforcement are not connected.
+                      {backendMode
+                        ? "Policy state is stored by the backend. Baseline security policies remain immutable; custom drafts are not executable Rego."
+                        : "Policy changes here demonstrate UI behavior only. OPA and server-side policy enforcement are not connected."}
                     </span>
                   </div>
                 </>
@@ -814,8 +1240,10 @@ export default function App() {
                   <div className="notice">
                     <Clock3 size={16} />
                     <span>
-                      Review the exact requested action before approving. Demo
-                      reviews do not execute a real tool.
+                      Review the exact requested action before approving.{" "}
+                      {backendMode
+                        ? "Approval issues a single-use token; the tool is not executed automatically."
+                        : "Demo reviews do not execute a real tool."}
                     </span>
                   </div>
                   {approvals.filter((a) => a.status === approvalTab).length ===
@@ -878,7 +1306,7 @@ export default function App() {
               {page === "Audit Logs" && (
                 <Panel
                   title="Gateway event stream"
-                  description={`${visibleEvents.length} events · demo session`}
+                  description={`${visibleEvents.length} events · ${backendMode ? "live backend" : "demo session"}`}
                   action={
                     <Badge tone="green" dot>
                       Append-only view
@@ -914,27 +1342,7 @@ export default function App() {
                         "Redacted",
                       ]}
                     />
-                    <Button
-                      onClick={() =>
-                        exportFile(
-                          "agentshield-audit.csv",
-                          "id,agent,tool,decision,risk,time\n" +
-                            visibleEvents
-                              .map((e) =>
-                                [
-                                  e.id,
-                                  e.agent,
-                                  e.tool,
-                                  e.decision,
-                                  e.risk,
-                                  e.time,
-                                ].join(","),
-                              )
-                              .join("\n"),
-                          "text/csv",
-                        )
-                      }
-                    >
+                    <Button onClick={() => exportAudit("csv")}>
                       <ArrowDownToLine size={14} />
                       CSV
                     </Button>
@@ -1042,8 +1450,9 @@ export default function App() {
                     <div>
                       <h3>A safe place to break things.</h3>
                       <p>
-                        These scenarios run through a local demo evaluator. No
-                        files are read, emails sent, or payments made.
+                        {backendMode
+                          ? "These scenarios run through the real gateway with mock adapters. No host files are read, emails sent, or payments made."
+                          : "These scenarios run through a local demo evaluator. No files are read, emails sent, or payments made."}
                       </p>
                     </div>
                     <Badge tone="violet">SANDBOX</Badge>
@@ -1148,13 +1557,13 @@ export default function App() {
                   description="Potentially unsafe content is never passed directly to an agent."
                 >
                   {quarantined.length ? (
-                    quarantined.map((q, i) => (
-                      <div className="quarantine-row" key={q}>
+                    quarantined.map((item, i) => (
+                      <div className="quarantine-row" key={item.id}>
                         <span className="integration-icon violet">
                           <Shield size={20} />
                         </span>
                         <div>
-                          <h3>{q}</h3>
+                          <h3>{item.label}</h3>
                           <p>
                             Detected by mock security engine · untrusted
                             provenance · {i + 2} minutes ago
@@ -1163,20 +1572,25 @@ export default function App() {
                         <Badge tone="violet">Isolated</Badge>
                         <Button
                           variant="danger compact"
-                          onClick={() => {
-                            setQuarantined((old) =>
-                              old.filter((item) => item !== q),
+                          onClick={async () => {
+                            const released = await releaseQuarantinedItem(
+                              item.id,
+                              "Removed from quarantine view by an administrator.",
                             )
-                            notify(
-                              "Demo item permanently removed from quarantine.",
-                            )
+                            if (released) {
+                              notify(
+                                backendMode
+                                  ? "Quarantined item released. No content was sent to an agent."
+                                  : "Demo item permanently removed from quarantine.",
+                              )
+                            }
                           }}
                         >
                           Delete
                         </Button>
                         <Button
                           variant="compact"
-                          onClick={() => setModal(`Release: ${q}`)}
+                          onClick={() => setModal(`Release: ${item.id}`)}
                         >
                           Review
                         </Button>
@@ -1208,24 +1622,48 @@ export default function App() {
                       </label>
                       <label>
                         Environment
-                        <input value="Local demonstration" readOnly />
+                        <input
+                          value={
+                            backendMode
+                              ? "Connected backend"
+                              : "Local demonstration"
+                          }
+                          readOnly
+                        />
                       </label>
                       <label>
                         Tenant identifier
-                        <input value="tenant_acme_demo" readOnly />
+                        <input
+                          value={sessionUser?.tenant_id || "tenant_acme_demo"}
+                          readOnly
+                        />
                       </label>
                       <label>
                         Backend API URL
                         <input
+                          value={backendMode ? apiBaseUrl : ""}
                           placeholder="Not connected — demo data only"
-                          disabled
+                          readOnly
                         />
                       </label>
                       <Button
                         variant="primary"
-                        onClick={() => {
+                        onClick={async () => {
                           if (!workspaceDraft.trim()) {
                             notify("Workspace name cannot be empty.")
+                            return
+                          }
+                          if (backendMode) {
+                            try {
+                              const workspace = await updateWorkspaceApi(
+                                workspaceDraft.trim(),
+                              )
+                              setWorkspaceName(workspace.name)
+                              setWorkspaceDraft(workspace.name)
+                              notify("Workspace preferences saved.")
+                            } catch (error) {
+                              notify(errorMessage(error))
+                            }
                             return
                           }
                           setWorkspaceName(workspaceDraft.trim())
@@ -1332,15 +1770,19 @@ export default function App() {
             <ChevronRight size={14} />
           </button>
           <div className="popover-note">
-            Seeded demo notifications · all caught up
+            {backendMode
+              ? "Live approval notifications · all caught up"
+              : "Seeded demo notifications · all caught up"}
           </div>
         </div>
       )}
       {profileOpen && (
         <div className="popover profile-popover">
-          <h3>Jamie Davis</h3>
-          <p>admin@agentshield.demo</p>
-          <Badge tone="violet">Workspace admin</Badge>
+          <h3>{sessionUser?.email?.split("@")[0] || "Jamie Davis"}</h3>
+          <p>{sessionUser?.email || "admin@agentshield.demo"}</p>
+          <Badge tone="violet">
+            {sessionUser?.role || "Workspace admin"}
+          </Badge>
           <button
             onClick={() => {
               navigate("Settings")
@@ -1350,14 +1792,9 @@ export default function App() {
             <Settings2 size={15} />
             Workspace settings
           </button>
-          <button
-            onClick={() => {
-              setLoggedIn(false)
-              setProfileOpen(false)
-            }}
-          >
+          <button onClick={signOut}>
             <LogOut size={15} />
-            Sign out of demo
+            {backendMode ? "Sign out" : "Sign out of demo"}
           </button>
         </div>
       )}
@@ -1416,8 +1853,8 @@ export default function App() {
               Agent: selectedEvent.agent,
               Tool: selectedEvent.tool,
               "Risk score": `${selectedEvent.risk} / 100`,
-              Tenant: "tenant_acme_demo",
-              "Policy engine": "Local demo",
+              Tenant: sessionUser?.tenant_id || "tenant_acme_demo",
+              "Policy engine": backendMode ? "Server-side policy" : "Local demo",
               Time: selectedEvent.time,
             }).map(([key, val]) => (
               <div key={key}>
@@ -1429,8 +1866,9 @@ export default function App() {
           <div className="notice">
             <ShieldCheck size={16} />
             <span>
-              This is a demo event. No host tools or external services were
-              executed.
+              {backendMode
+                ? "This event is from the live gateway audit log. Blocked requests never reached an adapter."
+                : "This is a demo event. No host tools or external services were executed."}
             </span>
           </div>
           <div className="modal-actions">
@@ -1482,7 +1920,7 @@ export default function App() {
             <Shield size={15} />
             <span>
               Sensitive values are masked. Approval applies only to the exact
-              demo action shown above.
+              action shown above and cannot be reused.
             </span>
           </div>
           {selectedApproval.status === "Pending" && (
@@ -1508,7 +1946,7 @@ export default function App() {
                   onClick={() => reviewApproval("Approved")}
                 >
                   <Check size={15} />
-                  Approve demo request
+                  {backendMode ? "Approve request" : "Approve demo request"}
                 </Button>
               </div>
             </>
@@ -1535,7 +1973,9 @@ export default function App() {
               }}
             >
               <p className="muted">
-                Create a demo identity scoped to {workspaceName}.
+                {backendMode
+                  ? `Create an identity scoped to ${workspaceName} and the current tenant.`
+                  : `Create a demo identity scoped to ${workspaceName}.`}
               </p>
               <label className="form-label">
                 Agent name
@@ -1566,27 +2006,31 @@ export default function App() {
               <div className="notice">
                 <KeyRound size={16} />
                 <span>
-                  A non-functional demo key will be generated. Real API keys
-                  require a backend.
+                  {backendMode
+                    ? "A scoped API key will be issued once. Store it securely."
+                    : "A non-functional demo key will be generated. Real API keys require a backend."}
                 </span>
               </div>
               <div className="modal-actions">
                 <Button onClick={() => setModal(null)}>Cancel</Button>
                 <Button type="submit" variant="primary">
-                  Create demo agent
+                  {backendMode ? "Create agent" : "Create demo agent"}
                 </Button>
               </div>
             </form>
           )}
-          {(modal === "Agent created" || modal === "New demo key") && (
+          {(modal === "Agent created" ||
+            modal === "New demo key" ||
+            modal === "New API key") && (
             <>
               <div className="success-icon">
                 <Check size={25} />
               </div>
-              <h3>Demo identity ready</h3>
+              <h3>{backendMode ? "Identity ready" : "Demo identity ready"}</h3>
               <p className="muted">
-                This key is for interface demonstration only and cannot
-                authenticate API requests.
+                {backendMode
+                  ? "Store this key once. It cannot be retrieved again."
+                  : "This key is for interface demonstration only and cannot authenticate API requests."}
               </p>
               <pre className="key-display">{newKey}</pre>
               <div className="modal-actions">
@@ -1594,7 +2038,9 @@ export default function App() {
                   onClick={async () => {
                     try {
                       await navigator.clipboard.writeText(newKey)
-                      notify("Demo key copied.")
+                      notify(
+                        backendMode ? "API key copied." : "Demo key copied.",
+                      )
                     } catch {
                       notify(
                         "Clipboard unavailable. Select and copy the key above.",
@@ -1602,7 +2048,7 @@ export default function App() {
                     }
                   }}
                 >
-                  Copy demo key
+                  {backendMode ? "Copy API key" : "Copy demo key"}
                 </Button>
                 <Button variant="primary" onClick={() => setModal(null)}>
                   Done
@@ -1617,7 +2063,9 @@ export default function App() {
               <p>
                 Are you sure you want to{" "}
                 {modal === "Rotate API key"
-                  ? "rotate the demo key for"
+                  ? backendMode
+                    ? "rotate the API key for"
+                    : "rotate the demo key for"
                   : modal === "Disable agent"
                     ? "disable"
                     : "enable"}{" "}
@@ -1626,9 +2074,13 @@ export default function App() {
               <div className="notice">
                 <Shield size={17} />
                 <span>
-                  {modal === "Disable agent"
-                    ? "The agent will be marked disabled in this demo. A real gateway must enforce revocation server-side."
-                    : "This change affects demo state only, not real credentials or services."}
+                  {backendMode
+                    ? modal === "Disable agent"
+                      ? "The gateway will reject every request from this agent immediately."
+                      : "The previous credential is revoked before the new key is issued."
+                    : modal === "Disable agent"
+                      ? "The agent will be marked disabled in this demo. A real gateway must enforce revocation server-side."
+                      : "This change affects demo state only, not real credentials or services."}
                 </span>
               </div>
               <div className="modal-actions">
@@ -1636,25 +2088,18 @@ export default function App() {
                 <Button
                   variant={modal === "Disable agent" ? "danger" : "primary"}
                   onClick={() => {
+                    const agent = agents.find(
+                      (item) => item.name === selectedAgent,
+                    )
+                    if (!agent) return
                     if (modal === "Rotate API key") {
-                      setNewKey(`as_demo_${crypto.randomUUID()}`)
-                      setModal("New demo key")
+                      rotateKey(agent)
                     } else {
-                      setAgents((old) =>
-                        old.map((a) =>
-                          a.name === selectedAgent
-                            ? {
-                                ...a,
-                                status:
-                                  modal === "Disable agent"
-                                    ? "Disabled"
-                                    : "Active",
-                              }
-                            : a,
-                        ),
-                      )
                       setModal(null)
-                      notify("Agent status updated in demo.")
+                      changeAgentStatus(
+                        agent,
+                        modal === "Disable agent" ? "Disabled" : "Active",
+                      )
                     }
                   }}
                 >
@@ -1740,9 +2185,56 @@ export default function App() {
                 <Button onClick={() => setModal(null)}>Close</Button>
                 <Button
                   variant="primary"
-                  onClick={() => {
-                    setModal(null)
-                    notify("Demo restrictions saved for this session.")
+                  onClick={async () => {
+                    if (!backendMode || !selectedAgentRecord) {
+                      setModal(null)
+                      notify("Demo restrictions saved for this session.")
+                      return
+                    }
+                    const pathValue =
+                      scopes[`${selectedAgent}:${modal}:scope`] ??
+                      "/workspace/**"
+                    const domainValue =
+                      scopes[`${selectedAgent}:${modal}:domains`] ??
+                      "acme.example, docs.example"
+                    const nextScopes: Record<string, unknown> = {
+                      ...(selectedAgentRecord.scopes || {}),
+                      allowed_paths: pathValue
+                        .split(",")
+                        .map((item) => item.trim())
+                        .filter(Boolean),
+                      allowed_domains: domainValue
+                        .split(",")
+                        .map((item) => item.trim())
+                        .filter(Boolean),
+                    }
+                    if (modal.includes("Payments")) {
+                      nextScopes.payment_budget = Number(
+                        scopes[`${selectedAgent}:${modal}:budget`] ?? "500",
+                      )
+                    }
+                    try {
+                      const updated = await updateAgentApi(
+                        selectedAgentRecord.id,
+                        { scopes: nextScopes },
+                      )
+                      setAgents((old) =>
+                        old.map((agent) =>
+                          agent.id === updated.id
+                            ? {
+                                ...agent,
+                                ...updated,
+                                color: agent.color,
+                                initials: agent.initials,
+                              }
+                            : agent,
+                        ),
+                      )
+                      setModal(null)
+                      notify("Agent restrictions saved to the gateway.")
+                    } catch (error) {
+                      notify(errorMessage(error))
+                    }
                   }}
                 >
                   Save restrictions
@@ -1786,6 +2278,12 @@ export default function App() {
                           <Button
                             variant="compact"
                             onClick={() => {
+                              if (backendMode) {
+                                notify(
+                                  "Version rollback is not exposed by the connected policy API.",
+                                )
+                                return
+                              }
                               setPolicies((old) =>
                                 old.map((item) =>
                                   item.id === p.id
@@ -1805,7 +2303,34 @@ export default function App() {
                   <div className="modal-actions">
                     <Button
                       variant={p.active ? "danger" : "primary"}
-                      onClick={() => {
+                      disabled={p.immutable}
+                      onClick={async () => {
+                        if (p.immutable) {
+                          notify("Baseline security policies cannot be disabled.")
+                          return
+                        }
+                        if (backendMode) {
+                          try {
+                            const updated = await updatePolicyApi(
+                              p.id,
+                              !p.active,
+                            )
+                            setPolicies((old) =>
+                              old.map((item) =>
+                                item.id === p.id
+                                  ? { ...item, ...updated }
+                                  : item,
+                              ),
+                            )
+                            setModal(null)
+                            notify(
+                              `Policy ${updated.active ? "activated" : "deactivated"}.`,
+                            )
+                          } catch (error) {
+                            notify(errorMessage(error))
+                          }
+                          return
+                        }
                         setPolicies((old) =>
                           old.map((item) =>
                             item.id === p.id
@@ -1821,7 +2346,11 @@ export default function App() {
                         )
                       }}
                     >
-                      {p.active ? "Deactivate policy" : "Activate policy"}
+                      {p.immutable
+                        ? "Baseline policy enforced"
+                        : p.active
+                          ? "Deactivate policy"
+                          : "Activate policy"}
                     </Button>
                   </div>
                 </>
@@ -1829,19 +2358,35 @@ export default function App() {
             })()}
           {modal === "Create policy" && (
             <form
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault()
                 const form = new FormData(e.currentTarget)
+                const draft = {
+                  name: String(form.get("name")),
+                  description: String(form.get("description")),
+                  category: "Custom policy",
+                  rule: String(form.get("rule")),
+                }
+                if (backendMode) {
+                  try {
+                    const created = await createPolicyApi(draft)
+                    setPolicies((old) => [...old, created])
+                    setModal(null)
+                    notify(
+                      "Draft policy created. Custom Rego execution is not enabled.",
+                    )
+                  } catch (error) {
+                    notify(errorMessage(error))
+                  }
+                  return
+                }
                 setPolicies((old) => [
                   ...old,
                   {
                     id: `pol_${crypto.randomUUID().slice(0, 6)}`,
-                    name: String(form.get("name")),
-                    description: String(form.get("description")),
-                    category: "Custom policy",
+                    ...draft,
                     version: 1,
                     active: false,
-                    rule: String(form.get("rule")),
                   },
                 ])
                 setModal(null)
@@ -1878,8 +2423,9 @@ export default function App() {
               <div className="notice">
                 <CircleHelp size={16} />
                 <span>
-                  Custom rules are saved as demo drafts. They are not executable
-                  Rego policies.
+                  {backendMode
+                    ? "Custom rules are stored as backend drafts. The connected server does not execute custom Rego."
+                    : "Custom rules are saved as demo drafts. They are not executable Rego policies."}
                 </span>
               </div>
               <div className="modal-actions">
@@ -1891,26 +2437,73 @@ export default function App() {
           )}
           {modal === "Audit integrity" && (
             <>
-              <div className="integration-icon amber">
+              <div
+                className={`integration-icon ${
+                  backendMode && auditVerification?.valid
+                    ? "green"
+                    : backendMode
+                      ? "red"
+                      : "amber"
+                }`}
+              >
                 <Shield size={24} />
               </div>
-              <h3 className="detail-title">Backend verification required</h3>
+              <h3 className="detail-title">
+                {backendMode
+                  ? auditVerification?.valid
+                    ? "Audit chain verified"
+                    : auditVerification
+                      ? "Audit integrity check failed"
+                      : "Verification not run"
+                  : "Backend verification required"}
+              </h3>
               <p className="muted">
-                This demo displays seeded and session-generated events. A
-                cryptographic hash chain and durable append-only storage have
-                not been implemented. Connect the backend to enable real
-                integrity verification.
+                {backendMode
+                  ? auditVerification
+                    ? auditVerification.valid
+                      ? "Every event hash links to the previous event and the append-only sequence is intact."
+                      : `The hash chain is broken at event sequence ${auditVerification.broken_sequence ?? "unknown"}.`
+                    : "Run verification to check the tenant's hash-chained audit log."
+                  : "This demo displays seeded and session-generated events. A cryptographic hash chain and durable append-only storage have not been implemented. Connect the backend to enable real integrity verification."}
               </p>
               <div className="detail-grid">
                 <div>
-                  <span>Events in session</span>
-                  <strong>{events.length}</strong>
+                  <span>Events verified</span>
+                  <strong>
+                    {backendMode && auditVerification
+                      ? auditVerification.events
+                      : events.length}
+                  </strong>
                 </div>
                 <div>
                   <span>Verification status</span>
-                  <Badge tone="amber">Not verified</Badge>
+                  <Badge
+                    tone={
+                      backendMode
+                        ? auditVerification?.valid
+                          ? "green"
+                          : "red"
+                        : "amber"
+                    }
+                  >
+                    {backendMode
+                      ? auditVerification?.valid
+                        ? "Verified"
+                        : auditVerification
+                          ? "Failed"
+                          : "Not verified"
+                      : "Not verified"}
+                  </Badge>
                 </div>
               </div>
+              {backendMode && auditVerification?.head && (
+                <div className="notice">
+                  <ShieldCheck size={16} />
+                  <span>
+                    Chain head <code>{auditVerification.head.slice(0, 24)}…</code>
+                  </span>
+                </div>
+              )}
             </>
           )}
           {modal === "Workspace" && (
@@ -1919,15 +2512,19 @@ export default function App() {
                 <span className="workspace-avatar">A</span>
                 <div>
                   <strong>{workspaceName}</strong>
-                  <p>Enterprise · Demo environment</p>
+                  <p>
+                    Enterprise ·{" "}
+                    {backendMode ? "Connected tenant" : "Demo environment"}
+                  </p>
                 </div>
                 <Check size={18} />
               </div>
               <div className="notice">
                 <Globe size={17} />
                 <span>
-                  One seeded tenant is available. Multi-tenant isolation
-                  requires a connected backend.
+                  {backendMode
+                    ? `Requests and audit records are isolated to ${sessionUser?.tenant_id || "the current tenant"}.`
+                    : "One seeded tenant is available. Multi-tenant isolation requires a connected backend."}
                 </span>
               </div>
             </>
@@ -1935,9 +2532,10 @@ export default function App() {
           {modal === "Help & documentation" && (
             <>
               <p className="muted">
-                AgentShield is a runtime security gateway for AI agents. This
-                frontend is a standalone demonstration of the Platform &
-                Enforcement module.
+                AgentShield is a runtime security gateway for AI agents.{" "}
+                {backendMode
+                  ? "This workspace is connected to the live gateway, policy engine, and audit log."
+                  : "This frontend is a standalone demonstration of the Platform & Enforcement module."}
               </p>
               <div className="help-grid">
                 <div>
@@ -1952,42 +2550,51 @@ export default function App() {
                   <Users size={22} />
                   <h3>Built for your team</h3>
                   <p>
-                    P1 supplies security inspection, P2 supplies isolated
-                    offline tools, and P3 supplies online adapters.
+                    {backendMode
+                      ? "P1 inspection, P2 offline tools, and P3 online adapters are reported by the backend; unavailable integrations fail closed."
+                      : "P1 supplies security inspection, P2 supplies isolated offline tools, and P3 supplies online adapters."}
                   </p>
                 </div>
                 <div>
                   <FlaskConical size={22} />
                   <h3>Safely simulated</h3>
                   <p>
-                    The ten attack scenarios use local deterministic rules. No
-                    host files, secrets, or external services are accessed.
+                    {backendMode
+                      ? "The ten scenarios execute through the gateway with mock adapters. No host files, secrets, or external services are accessed."
+                      : "The ten attack scenarios use local deterministic rules. No host files, secrets, or external services are accessed."}
                   </p>
                 </div>
                 <div>
                   <KeyRound size={22} />
-                  <h3>Demo sign-in</h3>
+                  <h3>{backendMode ? "Signed in" : "Demo sign-in"}</h3>
                   <p>
-                    admin@agentshield.demo
-                    <br />
-                    demo-password
-                    <br />
-                    For UI demonstration only.
+                    {backendMode
+                      ? `${sessionUser?.email || "Administrator"} · ${sessionUser?.role || "admin"}`
+                      : "admin@agentshield.demo"}
+                    {!backendMode && (
+                      <>
+                        <br />
+                        demo-password
+                        <br />
+                        For UI demonstration only.
+                      </>
+                    )}
                   </p>
                 </div>
               </div>
               <div className="notice">
                 <BookOpen size={17} />
                 <span>
-                  Project notes are in agentshield/README.md and
-                  BUILD_STATUS.md. All demo state resets when the page reloads.
+                  {backendMode
+                    ? "Project notes are in agentshield/README.md and INTEGRATION.md. Live state is persisted by the backend."
+                    : "Project notes are in agentshield/README.md and BUILD_STATUS.md. All demo state resets when the page reloads."}
                 </span>
               </div>
             </>
           )}
           {modal.startsWith("Release:") && (
             <>
-              <h3>{modal.replace("Release: ", "")}</h3>
+              <h3>{quarantinedItem?.label}</h3>
               <pre className="approval-json">
                 [CONTENT WITHHELD BY MOCK SECURITY ENGINE]
               </pre>
@@ -2002,16 +2609,22 @@ export default function App() {
                 <Button onClick={() => setModal(null)}>Keep isolated</Button>
                 <Button
                   variant="danger"
-                  onClick={() => {
-                    const item = modal.replace("Release: ", "")
-                    setQuarantined((old) => old.filter((q) => q !== item))
+                  onClick={async () => {
+                    if (!quarantinedItem) return
+                    const released = await releaseQuarantinedItem(
+                      quarantinedItem.id,
+                      "Released from quarantine after administrator review.",
+                    )
+                    if (!released) return
                     setModal(null)
                     notify(
-                      "Demo item removed from isolation. No content was sent to an agent.",
+                      backendMode
+                        ? "Quarantined item released. No content was sent to an agent."
+                        : "Demo item removed from isolation. No content was sent to an agent.",
                     )
                   }}
                 >
-                  Release demo item
+                  {backendMode ? "Release item" : "Release demo item"}
                 </Button>
               </div>
             </>

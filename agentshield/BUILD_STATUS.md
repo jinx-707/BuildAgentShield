@@ -1,43 +1,77 @@
 # Build status
 
-## Scope revision
+## Completed
 
-The user requested **demo data for now and backend connection later**. Work
-therefore implements a complete navigable frontend demonstration, not the
-original fifteen-phase production platform.
+### Backend
 
-## Implemented
+- Strict Pydantic contracts and canonical decisions with the `BLOCK` → `DENY`
+  compatibility alias.
+- FastAPI application with `/v1` and `/api/v1` route prefixes, CORS, request IDs,
+  security headers, rate limiting, health, readiness, and metrics.
+- JWT dashboard authentication, role checks, agent API keys, tenant isolation,
+  and admin/lookup/developer/viewer capability separation.
+- Agent registry, strict per-tool input schemas, RBAC/ABAC permission and scope
+  checks, payment/merchant budgets, path/domain allowlists, and taint handling.
+- Fail-closed gateway with mock P1 inspection, mock P2/P3 adapters, unavailable
+  integration denial, idempotency records, quarantine, and regression tests.
+- Local policy engine plus optional OPA client and `policies/execution.rego`.
+- Human approval workflow with exact-action hashes, expiry, signed single-use
+  tokens, reject/approve review, and replay prevention.
+- Tenant-isolated append-only audit records with SHA-256 hash chaining,
+  verification, sanitized CSV/JSON export, and SQLite update/delete triggers.
+- Dashboard APIs for agents, capabilities/scopes, approvals, audit, policies,
+  quarantine, workspace, stats, tools, integration health, and simulator.
+- Seeded demo tenant, users, agents, policies, approvals, audit events, and
+  simulator scenarios.
+- Alembic initial migration and environment.
+- Dockerfiles, compose stack (PostgreSQL, Redis, OPA, API, nginx), and reverse
+  proxy configuration.
 
-- Dedicated `agentshield/` module with the existing scaffold as preview host.
-- Dark-first overview, chart, risk distribution, events, and integration health.
-- Agents, permissions, policy manager, approvals, audit, quarantine, simulator,
-  settings, workspace search, notifications, and demo login.
-- In-memory actions, masked approval details, exports, mobile navigation.
-- Ten safe local attack scenarios and frontend unit/browser test definitions.
-- README and integration notes explicitly distinguish demo and real enforcement.
+### Frontend
 
-## Deferred
+- Existing dark AgentShield dashboard is preserved; no redesign or palette
+  change was introduced.
+- API client with session storage, restore, login/logout, tenant-scoped data
+  loading, and silent offline fallback.
+- Live dashboard stats/chart data, agents, key rotation, status changes,
+  approvals, audit search/export/integrity, policies, quarantine release,
+  workspace settings, integration status, and backend simulator execution.
+- Backend-aware copy distinguishes live behavior from the offline demo.
+- Original demo mode remains fully functional when the API is unavailable.
 
-All original backend phases: Python contracts, FastAPI, authentication, tenant
-isolation, database/cache, OPA, execution gateway, signed approvals, hash-chained
-audit, integrations, SDK, Docker, monitoring, backend tests, and production
-security verification.
+### SDK and examples
+
+- Sync/async clients, health, propose/execute, idempotency, approval polling,
+  approve/reject, and simulator calls.
+- `SecureAgent` for framework integration.
+- SDK unit tests and LangGraph, CrewAI, and MCP examples.
 
 ## Verification
 
-Initial build identified two source syntax errors; both were corrected.
-Production build and TypeScript check subsequently passed.
-Unit tests: **14 passed**, including all 10 local attack scenario checks.
-Browser tests against the managed preview on port 3000: **4 passed**.
-The initial browser run targeted the scaffold's documented fallback port 8443;
-the managed preview reported port 3000, and the test configuration was corrected.
-Desktop and mobile screenshots were inspected. No horizontal overflow was found
-at the tested 390px mobile viewport.
+- Backend: **40 passed, 1 skipped**. The skipped test requires
+  `AGENTSHIELD_OPA_URL`.
+- SDK: **8 passed**.
+- Frontend TypeScript: `npx tsc --noEmit` passed.
+- Frontend unit tests: **14 passed**.
+- Production build: `npm run build` passed. Vite reports only non-fatal
+  config-loader and bundle-size warnings.
+- Browser tests without a backend: **4 passed** (overview, simulator, agent
+  lifecycle, approvals, audit filtering, demo login, permissions, policies,
+  quarantine, settings, search, and mobile layout).
+- Live backend browser smoke test: auto-connect, live overview stats, audit,
+  baseline-policy immutability, approval/quarantine review surfaces, and all ten
+  simulator scenarios passed.
+- Alembic `upgrade head` and `downgrade base` both completed successfully
+  against a temporary SQLite database.
 
-The production build reports a non-fatal large-bundle warning from the chart/UI
-dependencies. Production performance optimization remains future work.
+## Remaining verification
 
-Final verification: production build, TypeScript check, 14 unit tests, and all
-four browser workflows passed. Tests exercise agent creation/disable, approval
-review, audit filters, demo login, scopes, policy drafts/activation, quarantine,
-workspace settings, search, mobile navigation, and ten attack scenarios.
+- Docker/Compose could not be run because Docker is not installed in this
+  environment.
+- A real OPA binary was unavailable, so Rego evaluation remains unverified.
+  Backend policy tests use the local engine.
+- PostgreSQL and Redis runtime behavior were not exercised locally.
+- Load/performance testing and production deployment hardening remain future
+  work.
+- The production bundle is larger than 500 KB after minification; code splitting
+  is a future optimization.

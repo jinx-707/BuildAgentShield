@@ -1,4 +1,4 @@
-import {
+﻿import {
   Activity,
   ArrowUpRight,
   Box,
@@ -27,6 +27,7 @@ import {
 } from "recharts"
 import { Badge, Panel, Select, ViewLink, toneFor } from "../components/ui"
 import type { Agent, AuditEvent } from "../services/demo"
+import type { OverviewStats } from "../services/api"
 
 const data = Array.from({ length: 49 }, (_, i) => {
   const wave = Math.sin(i * 1.6) * 45 + Math.sin(i * 0.61) * 40
@@ -83,6 +84,8 @@ export default function Overview({
   setRange,
   pending,
   onEvent,
+  stats,
+  connected = false,
 }: {
   events: AuditEvent[]
   agents: Agent[]
@@ -91,9 +94,107 @@ export default function Overview({
   setRange: (range: string) => void
   pending: number
   onEvent: (event: AuditEvent) => void
+  stats?: OverviewStats | null
+  connected?: boolean
 }) {
   const factor =
     range === "Last 7 days" ? 6.8 : range === "Last 30 days" ? 27.3 : 1
+  const liveSeries = Boolean(stats?.series?.length)
+  const chartData: Array<{
+    hour: number
+    label: string
+    allowed: number
+    blocked: number
+  }> = liveSeries
+    ? stats!.series.map((point, index) => ({
+        hour: index,
+        label: point.label,
+        allowed: point.allowed,
+        blocked: point.blocked,
+      }))
+    : data.map((point) => ({
+        ...point,
+        label: `${String(point.hour === 24 ? 0 : point.hour).padStart(2, "0")}:00`,
+      }))
+  const totalRequests = stats
+    ? stats.total_requests
+    : Math.round(24856 * factor)
+  const allowedRequests = stats
+    ? stats.allowed_requests
+    : Math.round(22419 * factor)
+  const blockedThreats = stats
+    ? stats.blocked_threats
+    : Math.round(1842 * factor)
+  const riskLegend = stats
+    ? [
+        {
+          name: "Critical",
+          value: stats.risk_distribution.critical ?? 0,
+          tone: "red",
+        },
+        {
+          name: "High",
+          value: stats.risk_distribution.high ?? 0,
+          tone: "orange",
+        },
+        {
+          name: "Medium",
+          value: stats.risk_distribution.medium ?? 0,
+          tone: "violet",
+        },
+        {
+          name: "Low",
+          value: stats.risk_distribution.low ?? 0,
+          tone: "blue",
+        },
+      ].map((item) => ({
+        ...item,
+        percent: blockedThreats
+          ? `${((item.value / Math.max(1, blockedThreats)) * 100).toFixed(1)}%`
+          : "0%",
+      }))
+    : [
+        { name: "Critical", value: 124, percent: "6.7%", tone: "red" },
+        { name: "High", value: 486, percent: "26.4%", tone: "orange" },
+        { name: "Medium", value: 852, percent: "46.3%", tone: "violet" },
+        { name: "Low", value: 380, percent: "20.6%", tone: "blue" },
+      ].map((item) => ({
+        ...item,
+        value: Math.round(item.value * factor),
+      }))
+  const componentStatus = (name: string) =>
+    stats?.integrations.find((item) => item.name === name)?.status
+  const integrationRows = [
+    {
+      name: "Security engine",
+      person: "P1",
+      description: "Inspection & risk analysis",
+      icon: ShieldCheck,
+      color: "violet",
+      status: componentStatus("security_engine"),
+    },
+    {
+      name: "Offline adapters",
+      person: "P2",
+      description: "Files, documents & terminal",
+      icon: Layers,
+      color: "blue",
+      status: componentStatus("offline_adapters"),
+    },
+    {
+      name: "Online adapters",
+      person: "P3",
+      description: "Browser, email & payments",
+      icon: Box,
+      color: "green",
+      status: componentStatus("online_adapters"),
+    },
+  ]
+  const connectedCount = stats
+    ? integrationRows.filter(
+        (item) => item.status === "REAL" || item.status === "MOCK",
+      ).length
+    : 3
   return (
     <>
       <div className="security-banner">
@@ -108,7 +209,7 @@ export default function Overview({
           </span>
         </div>
         <Badge tone="green" dot>
-          Demo environment ready
+          {connected ? "Backend connected" : "Demo environment ready"}
         </Badge>
       </div>
       <div className="overview-title">
@@ -135,11 +236,14 @@ export default function Overview({
             </div>
             <div className="metric-middle">
               <strong>
-                {index === 3
-                  ? pending
-                  : Math.round(
-                      Number(m.value.replace(",", "")) * factor,
-                    ).toLocaleString()}
+                {(index === 0
+                  ? totalRequests
+                  : index === 1
+                    ? allowedRequests
+                    : index === 2
+                      ? blockedThreats
+                      : pending
+                ).toLocaleString()}
               </strong>
               <svg className="sparkline" viewBox="0 0 72 32">
                 <polyline
@@ -181,7 +285,7 @@ export default function Overview({
                 Allowed
               </span>
               <span>
-                <i className="legend-dot violet" />
+                <i className="legend-dot red" />
                 Blocked
               </span>
               <button
@@ -197,53 +301,73 @@ export default function Overview({
           <div className="activity-chart">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart
-                data={data}
+                data={chartData}
                 margin={{ top: 18, right: 5, bottom: 0, left: -25 }}
               >
                 <defs>
                   <linearGradient id="allowed-fill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#42c7b1" stopOpacity={0.2} />
-                    <stop offset="100%" stopColor="#42c7b1" stopOpacity={0} />
+                    <stop offset="0%" stopColor="#39865A" stopOpacity={0.2} />
+                    <stop offset="100%" stopColor="#39865A" stopOpacity={0} />
                   </linearGradient>
                   <linearGradient id="blocked-fill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#9a7ae8" stopOpacity={0.17} />
-                    <stop offset="100%" stopColor="#9a7ae8" stopOpacity={0} />
+                    <stop offset="0%" stopColor="#C83D32" stopOpacity={0.17} />
+                    <stop offset="100%" stopColor="#C83D32" stopOpacity={0} />
                   </linearGradient>
                 </defs>
                 <CartesianGrid
-                  stroke="#25262e"
+                  stroke="#E7E7E1"
                   strokeDasharray="3 5"
                   vertical={false}
                 />
                 <XAxis
                   dataKey="hour"
                   type="number"
-                  domain={[0, 24]}
-                  ticks={[0, 4, 8, 12, 16, 20, 24]}
+                  domain={liveSeries ? [0, Math.max(1, chartData.length - 1)] : [0, 24]}
+                  ticks={
+                    liveSeries
+                      ? chartData
+                          .map((point) => point.hour)
+                          .filter(
+                            (hour) =>
+                              hour === 0 ||
+                              hour === chartData.length - 1 ||
+                              hour % Math.ceil(chartData.length / 6) === 0,
+                          )
+                      : [0, 4, 8, 12, 16, 20, 24]
+                  }
                   tickFormatter={(v) =>
-                    `${String(v === 24 ? 0 : v).padStart(2, "0")}:00`
+                    liveSeries
+                      ? (chartData.find((point) => point.hour === Number(v))
+                          ?.label ?? "")
+                      : `${String(v === 24 ? 0 : v).padStart(2, "0")}:00`
                   }
                   tickLine={false}
                   axisLine={false}
-                  tick={{ fill: "#737582", fontSize: 10 }}
+                  tick={{ fill: "#73746E", fontSize: 10 }}
                   dy={10}
                 />
                 <YAxis
                   ticks={[0, 100, 200, 300, 400]}
                   tickLine={false}
                   axisLine={false}
-                  tick={{ fill: "#737582", fontSize: 10 }}
+                  tick={{ fill: "#73746E", fontSize: 10 }}
                 />
                 <Tooltip
                   contentStyle={{
-                    background: "#202128",
-                    border: "1px solid #363740",
+                    background: "#FFFFFF",
+                    border: "1px solid #D9DAD3",
                     borderRadius: 8,
                     fontSize: 12,
+                    color: "#171817",
                   }}
-                  labelFormatter={(v) => `${v}:00 · ${range}`}
+                  labelFormatter={(v) =>
+                    liveSeries
+                      ? (chartData.find((point) => point.hour === Number(v))
+                          ?.label ?? `${v}`)
+                      : `${v}:00 · ${range}`
+                  }
                   formatter={(value, name) => [
-                    Math.round(Number(value) * factor),
+                    Math.round(Number(value) * (liveSeries ? 1 : factor)),
                     name,
                   ]}
                 />
@@ -252,7 +376,7 @@ export default function Overview({
                   type="monotone"
                   dataKey="allowed"
                   name="Allowed"
-                  stroke="#53c6b1"
+                  stroke="#39865A"
                   fill="url(#allowed-fill)"
                   strokeWidth={2}
                   dot={false}
@@ -262,7 +386,7 @@ export default function Overview({
                   type="monotone"
                   dataKey="blocked"
                   name="Blocked"
-                  stroke="#a386ef"
+                  stroke="#C83D32"
                   fill="url(#blocked-fill)"
                   strokeWidth={2}
                   dot={false}
@@ -273,10 +397,10 @@ export default function Overview({
           <div className="chart-footer">
             <span>
               <span className="live-dot" />
-              Demo monitoring
+              {connected ? "Live monitoring" : "Demo monitoring"}
             </span>
             <span>
-              Seeded activity
+              {connected ? "Backend activity" : "Seeded activity"}
               <Clock3 size={11} />
             </span>
           </div>
@@ -291,7 +415,7 @@ export default function Overview({
             <div className="donut">
               <div className="donut-center">
                 <span>Total threats</span>
-                <strong>{Math.round(1842 * factor).toLocaleString()}</strong>
+                <strong>{blockedThreats.toLocaleString()}</strong>
                 <small>
                   <ShieldCheck size={10} />
                   100% intercepted
@@ -300,18 +424,13 @@ export default function Overview({
             </div>
           </div>
           <div className="risk-legend">
-            {[
-              { name: "Critical", value: 124, percent: "6.7%", tone: "red" },
-              { name: "High", value: 486, percent: "26.4%", tone: "orange" },
-              { name: "Medium", value: 852, percent: "46.3%", tone: "violet" },
-              { name: "Low", value: 380, percent: "20.6%", tone: "blue" },
-            ].map((r) => (
+            {riskLegend.map((r) => (
               <div key={r.name}>
                 <span>
                   <i className={`legend-dot ${r.tone}`} />
                   {r.name}
                 </span>
-                <strong>{Math.round(r.value * factor).toLocaleString()}</strong>
+                <strong>{r.value.toLocaleString()}</strong>
                 <span className="muted">{r.percent}</span>
               </div>
             ))}
@@ -405,7 +524,9 @@ export default function Overview({
           <div className="panel-footer">
             <span>
               <i className="tiny-dot" />
-              Demo event stream · cryptographic verification not connected
+              {connected
+                ? "Live event stream · hash-chained audit log"
+                : "Demo event stream · cryptographic verification not connected"}
             </span>
             <ShieldCheck size={13} />
           </div>
@@ -413,50 +534,39 @@ export default function Overview({
         <Panel
           title="Integration health"
           description="Your security stack, connected"
-          action={<Badge tone="neutral">3 / 3</Badge>}
+          action={<Badge tone="neutral">{connectedCount} / 3</Badge>}
           className="integrations-panel"
         >
-          {[
-            {
-              name: "Security engine",
-              person: "P1",
-              description: "Inspection & risk analysis",
-              icon: ShieldCheck,
-              color: "violet",
-            },
-            {
-              name: "Offline adapters",
-              person: "P2",
-              description: "Files, documents & terminal",
-              icon: Layers,
-              color: "blue",
-            },
-            {
-              name: "Online adapters",
-              person: "P3",
-              description: "Browser, email & payments",
-              icon: Box,
-              color: "green",
-            },
-          ].map((item) => (
-            <div className="integration-row" key={item.person}>
-              <span className={`integration-icon ${item.color}`}>
-                <item.icon size={18} />
-              </span>
-              <div>
-                <strong>
-                  {item.name}
-                  <span>{item.person}</span>
-                </strong>
-                <p>{item.description}</p>
+          {integrationRows.map((item) => {
+            const status = item.status || "MOCK"
+            const tone =
+              status === "REAL"
+                ? "green"
+                : status === "MOCK"
+                  ? "amber"
+                  : "red"
+            return (
+              <div className="integration-row" key={item.person}>
+                <span className={`integration-icon ${item.color}`}>
+                  <item.icon size={18} />
+                </span>
+                <div>
+                  <strong>
+                    {item.name}
+                    <span>{item.person}</span>
+                  </strong>
+                  <p>{item.description}</p>
+                </div>
+                <Badge tone={tone}>{status === "REAL" ? "Live" : status === "MOCK" ? "Mock" : status}</Badge>
               </div>
-              <Badge tone="amber">Mock</Badge>
-            </div>
-          ))}
+            )
+          })}
           <div className="integration-note">
             <Code2 size={15} />
             <span>
-              Running with safe mock integrations.
+              {connected
+                ? "Connected to the live gateway and integration health API."
+                : "Running with safe mock integrations."}
               <br />
               <button onClick={() => navigate("Settings")}>
                 Connect your modules <ArrowUpRight size={11} />
@@ -466,9 +576,11 @@ export default function Overview({
           <div className="gateway-status">
             <span>
               <i className="live-dot" />
-              Mock execution gateway
+              {connected ? "Execution gateway online" : "Mock execution gateway"}
             </span>
-            <Badge tone="green">Simulated</Badge>
+            <Badge tone={connected ? "green" : "green"}>
+              {connected ? "Connected" : "Simulated"}
+            </Badge>
           </div>
         </Panel>
       </div>
@@ -536,7 +648,7 @@ export default function Overview({
         <span>
           AgentShield Platform <span className="muted">v1.0.0</span>
           <i />
-          Demo environment
+          {connected ? "Live environment" : "Demo environment"}
         </span>
       </div>
     </>

@@ -1,0 +1,86 @@
+name: agentshield
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: agentshield
+      POSTGRES_USER: agentshield
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentshield-local-password}
+    volumes:
+      - agentshield-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentshield -d agentshield"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - agentshield-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  opa:
+    image: openpolicyagent/opa:0.70.0
+    command: ["run", "--server", "--addr=0.0.0.0:8181", "/policies/execution.rego"]
+    volumes:
+      - ./policies:/policies:ro
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      AGENTSHIELD_ENVIRONMENT: ${AGENTSHIELD_ENVIRONMENT:-development}
+      AGENTSHIELD_DATABASE_URL: postgresql+asyncpg://agentshield:${POSTGRES_PASSWORD:-agentshield-local-password}@postgres:5432/agentshield
+      AGENTSHIELD_REDIS_URL: redis://redis:6379/0
+      AGENTSHIELD_OPA_URL: http://opa:8181
+      AGENTSHIELD_JWT_SECRET: ${AGENTSHIELD_JWT_SECRET:-dev-compose-jwt-secret-change-me}
+      AGENTSHIELD_API_KEY_PEPPER: ${AGENTSHIELD_API_KEY_PEPPER:-dev-compose-api-key-pepper-change-me}
+      AGENTSHIELD_APPROVAL_SIGNING_SECRET: ${AGENTSHIELD_APPROVAL_SIGNING_SECRET:-dev-compose-approval-secret-change-me}
+      AGENTSHIELD_ADMIN_EMAIL: ${AGENTSHIELD_ADMIN_EMAIL:-admin@agentshield.local}
+      AGENTSHIELD_ADMIN_PASSWORD: ${AGENTSHIELD_ADMIN_PASSWORD:-admin-change-me}
+      AGENTSHIELD_ADMIN_TENANT_SLUG: ${AGENTSHIELD_ADMIN_TENANT_SLUG:-acme}
+      AGENTSHIELD_ADMIN_TENANT_NAME: ${AGENTSHIELD_ADMIN_TENANT_NAME:-Acme workspace}
+      AGENTSHIELD_P1_ENGINE: mock
+      AGENTSHIELD_P2_ADAPTERS: mock
+      AGENTSHIELD_P3_ADAPTERS: mock
+      AGENTSHIELD_ALLOWED_ORIGINS: '["http://localhost:8080","http://127.0.0.1:8080"]'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      opa:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 10
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: agentshield/frontend/Dockerfile
+    ports:
+      - "${AGENTSHIELD_HTTP_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  agentshield-postgres:
+  agentshield-redis:

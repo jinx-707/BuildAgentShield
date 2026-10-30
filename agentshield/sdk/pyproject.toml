@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentshield-sdk"
+version = "1.0.0"
+description = "Fail-closed Python client for the AgentShield execution gateway"
+requires-python = ">=3.11"
+dependencies = ["httpx>=0.27,<1"]
+
+[project.optional-dependencies]
+test = ["pytest>=8.4", "pytest-asyncio>=0.24"]
+
+[tool.setuptools.packages.find]
+include = ["agentshield_sdk*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
