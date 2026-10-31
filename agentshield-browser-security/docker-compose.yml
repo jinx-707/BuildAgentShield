@@ -1,0 +1,113 @@
+name: agentshield-browser-security
+
+services:
+  api:
+    build:
+      context: ./api
+    env_file:
+      - .env
+    environment:
+      BROWSER_WORKER_URL: http://browser-worker:8080
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    depends_on:
+      browser-worker:
+        condition: service_healthy
+    networks:
+      - edge
+      - worker-net
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 512m
+    restart: unless-stopped
+
+  browser-worker:
+    build:
+      context: ./worker
+    env_file:
+      - .env
+    environment:
+      WORKER_HOST: 0.0.0.0
+      WORKER_PORT: 8080
+      NODE_ENV: production
+      REQUIRE_EGRESS_PROXY: "true"
+      EGRESS_PROXY_URL: http://egress-proxy:3128
+      EGRESS_PROXY_HEALTH_URL: http://egress-proxy:9090/health/ready
+      BROWSER_ALLOW_PRIVATE_NETWORKS: "false"
+    expose:
+      - "8080"
+    depends_on:
+      egress-proxy:
+        condition: service_healthy
+    networks:
+      - worker-net
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+      - /home/node/.cache:size=256m,mode=1777
+      - /home/node/.config:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    mem_limit: 2g
+    cpus: "2.0"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/health/ready').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    restart: unless-stopped
+
+  egress-proxy:
+    build:
+      context: ./proxy
+    environment:
+      PROXY_HOST: 0.0.0.0
+      PROXY_PORT: "3128"
+      PROXY_HEALTH_HOST: 0.0.0.0
+      PROXY_HEALTH_PORT: "9090"
+      PROXY_AUTH_TOKEN: ${PROXY_AUTH_TOKEN:-}
+      PROXY_ALLOWED_DOMAINS: ${ALLOWED_DOMAINS:-}
+      PROXY_BLOCKED_DOMAINS: ${BLOCKED_DOMAINS:-}
+      PROXY_DEFAULT_DOMAIN_POLICY: ${DEFAULT_DOMAIN_POLICY:-deny}
+      PROXY_ALLOWED_PORTS: ${ALLOWED_PORTS:-80,443}
+      PROXY_ALLOW_PRIVATE_NETWORKS: "false"
+    dns:
+      - ${PROXY_DNS_SERVER:-1.1.1.1}
+    expose:
+      - "3128"
+      - "9090"
+    networks:
+      - worker-net
+      - egress-net
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 256m
+    restart: unless-stopped
+
+networks:
+  edge:
+  worker-net:
+    internal: true
+  egress-net:

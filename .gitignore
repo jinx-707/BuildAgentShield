@@ -32,3 +32,5 @@ build/
 
 # Temporary files
 *.tmp
+# Python packaging metadata
+**/*.egg-info/

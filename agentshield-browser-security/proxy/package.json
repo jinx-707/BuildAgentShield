@@ -1,0 +1,17 @@
+{
+  "name": "agentshield-egress-proxy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Default-deny policy-enforcing egress proxy for AgentShield",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=../.env --env-file-if-exists=.env src/index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "ipaddr.js": "^2.5.0"
+  }
+}
