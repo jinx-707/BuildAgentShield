@@ -1,0 +1,30 @@
+# AgentShield Offline — NeMo Guardrails: Model-Backed Profile
+#
+# Uses an LLM for more accurate jailbreak and safety detection.
+# Requires a configured model provider (OpenAI, Azure OpenAI, or local).
+#
+# PRIVACY WARNING: Content will be sent to the configured provider.
+# Only use this profile after reviewing your data handling requirements.
+# Never configure this profile to receive secrets, credentials, or PII.
+#
+# Activate with: AGENTSHIELD_NEMO_PROFILE=model_backed
+# Set your provider credentials via environment variables (NOT here).
+
+models:
+  - type: main
+    engine: openai
+    model: gpt-3.5-turbo
+    # Credentials come from OPENAI_API_KEY env var — never hardcode here
+
+rails:
+  input:
+    flows:
+      - check jailbreak
+      - check input safety
+      - self check input
+  output:
+    flows:
+      - self check output
+      - check output safety
+
+# Colang flows are defined in rails.co
