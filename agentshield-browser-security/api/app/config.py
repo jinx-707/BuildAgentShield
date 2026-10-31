@@ -21,6 +21,10 @@ class Settings(BaseSettings):
 
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+    cors_origins: str = (
+        "http://127.0.0.1:8443,http://localhost:8443,"
+        "http://127.0.0.1:5173,http://localhost:5173"
+    )
 
     browser_worker_url: str = "http://127.0.0.1:8080"
     browser_worker_timeout_seconds: float = 30.0
@@ -69,6 +73,10 @@ class Settings(BaseSettings):
     rate_limit_trusted_proxy_max_hops: int = Field(default=10, ge=1, le=20)
     redis_url: SecretStr = SecretStr("")
     redis_timeout_seconds: float = Field(default=1.0, gt=0, le=10)
+
+    # JWT — required for enterprise authentication
+    # Generate with: python3 -c "import secrets; print(secrets.token_hex(32))"
+    jwt_secret: SecretStr = SecretStr("INSECURE-dev-default-change-me")
 
     # Web search provider (C1). The API key is wrapped in SecretStr so it can
     # never be rendered by repr(), logging, or a settings dump.
@@ -145,19 +153,26 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_production_auth(self) -> "Settings":
-        """Fail closed: production deployments must configure API_AUTH_TOKEN.
+        """Fail closed: production deployments must configure API_AUTH_TOKEN and JWT_SECRET.
 
         An empty token in production silently disables authentication on all
         non-health endpoints.  We refuse to construct a valid Settings object
         in that state so the misconfiguration is caught at startup, not silently
         at request time.
         """
-        if self.environment.lower() == "production" and not self.api_auth_token:
-            raise ValueError(
-                "API_AUTH_TOKEN must be set in production. "
-                "An empty token disables authentication on all non-health endpoints. "
-                "Set API_AUTH_TOKEN to a secret Bearer token before deploying."
-            )
+        _INSECURE_JWT = "INSECURE-dev-default-change-me"
+        if self.environment.lower() == "production":
+            if not self.api_auth_token:
+                raise ValueError(
+                    "API_AUTH_TOKEN must be set in production. "
+                    "An empty token disables authentication on all non-health endpoints. "
+                    "Set API_AUTH_TOKEN to a secret Bearer token before deploying."
+                )
+            if self.jwt_secret.get_secret_value() == _INSECURE_JWT:
+                raise ValueError(
+                    "JWT_SECRET must be set to a strong random value in production. "
+                    "Generate one with: python3 -c \"import secrets; print(secrets.token_hex(32))\""
+                )
         if (
             self.environment.lower() == "production"
             and self.default_domain_policy.lower() != "allow"

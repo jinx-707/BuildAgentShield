@@ -54,6 +54,7 @@ from fastapi.responses import JSONResponse
 
 from api.middleware import ApiAuthMiddleware, RateLimitMiddleware, RequestContextMiddleware
 from api.routes import router as download_router
+from config.logging_setup import configure_logging
 from config.settings import Settings, get_settings, security_issues
 from security.errors import DownloadSecurityError
 
@@ -64,6 +65,7 @@ _READY_CHECK_TIMEOUT_SECONDS = 3.0
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     resolved = settings or get_settings()
+    configure_logging(resolved.log_level)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -95,10 +97,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         engine = get_async_engine(resolved.database_url)
         session_factory = get_async_session(engine)
 
-        # Run Alembic migrations on startup.
-        alembic_cfg = Config(
-            os.path.join(os.path.dirname(os.path.dirname(__file__)), "alembic.ini")
-        )
+        # Run Alembic migrations on startup.  The Config is built without a
+        # config file on purpose: env.py calls fileConfig() for the Alembic
+        # CLI, and doing that here would replace the process's logging config
+        # (and historically disabled the application's loggers).
+        alembic_cfg = Config()
         alembic_cfg.set_main_option("sqlalchemy.url", resolved.database_url)
         alembic_cfg.set_main_option(
             "script_location",

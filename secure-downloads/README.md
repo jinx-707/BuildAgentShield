@@ -9,94 +9,48 @@ introducing malware, malicious documents, SSRF vulnerabilities, or unauthorized
 files into the browser-security environment. It is an independent Python
 module with its own configuration, database, storage, and test suite.
 
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components, request flows, trust boundaries, recovery |
+| [docs/EGRESS_INVENTORY.md](docs/EGRESS_INVENTORY.md) | Every outbound path, transport, limits, tests |
+| [docs/SECURITY_CONTROLS.md](docs/SECURITY_CONTROLS.md) | Control → enforcement → tests → limitations |
+| [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | Assets, actors, scenarios, residual risks |
+| [docs/RESIDUAL_RISK.md](docs/RESIDUAL_RISK.md) | Numbered risk register |
+| [docs/API_REFERENCE.md](docs/API_REFERENCE.md) | Endpoints, payloads, status codes |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Services, containers, proxy/ClamAV/DB setup, checklist |
+| [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) | Every environment variable |
+| [docs/OPERATIONS_RUNBOOK.md](docs/OPERATIONS_RUNBOOK.md) | Triage, queries, quarantine, backup, incidents |
+| [docs/E2E_DEMOS.md](docs/E2E_DEMOS.md) | Demo 1–10, real vs simulated |
+| [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Bounded local load measurements |
+| [docs/TEST_REPORT.md](docs/TEST_REPORT.md) | Exact counts and category partition |
+| [docs/FINAL_VERIFICATION.md](docs/FINAL_VERIFICATION.md) | Acceptance evidence and verdict |
+
 ## Architecture
 
 ```
 secure-downloads/
-├── pyproject.toml              # Project metadata + dependencies
-├── alembic.ini                 # Alembic configuration
-├── .env.example                # Environment variable documentation
-├── config/
-│   ├── __init__.py
-│   └── settings.py             # Pydantic settings, production fail-closed
-├── models/
-│   ├── __init__.py
-│   ├── database.py             # SQLAlchemy async engine + session factory
-│   ├── download.py             # Download ORM model + state machine
-│   └── analysis.py             # DocumentAnalysis ORM model + job state machine
-├── security/
-│   ├── __init__.py
-│   ├── errors.py               # Error codes
-│   ├── ip_policy.py            # SSRF IP blocking (private, metadata, etc.)
-│   ├── domain_policy.py        # Domain allow/block list + port policy
-│   ├── url_validator.py        # HTTPS-only URL validation
-│   ├── ssrf.py                 # DNS resolution + SSRF preflight guard
-│   ├── dns_revalidation.py     # Connection-time DNS re-validation (not pinning)
-│   ├── proxy_enforcement.py    # Egress-proxy enforcement attestation
-│   ├── proxy_auth.py           # Proxy-Authorization credential construction
-│   ├── analysis_egress.py      # Second egress path: analysis transport + endpoint policy
-│   ├── mime_validator.py       # Magic-byte MIME detection, archive rejection
-│   └── preflight.py            # Combined URL + SSRF pre-flight check
-├── services/
-│   ├── __init__.py
-│   ├── scanner.py              # ClamAV integration (fail-closed)
-│   ├── downloader.py          # Proxy-enforced streaming downloader
-│   ├── repository.py           # Download metadata persistence (tenant-scoped)
-│   ├── orchestrator.py         # Full download lifecycle state machine
-│   ├── document_processor.py   # Bounded, non-executing PDF inspection (pypdf)
-│   ├── analysis_repository.py  # Analysis job persistence (tenant-scoped)
-│   └── analysis_service.py     # Analysis pipeline + fixed worker pool (AnalysisRunner)
-├── storage/
-│   ├── __init__.py
-│   └── manager.py              # Zone-isolated storage (temp/quarantine/approved)
-├── integrations/
-│   ├── __init__.py
-│   ├── handoff.py              # Approved-only handoff gate + adapter interface + mock
-│   ├── analysis_models.py      # Provider contract v1 + normalized result schema
-│   └── analysis_adapter.py     # Hardened HTTP adapter, retries, response validation
-├── api/
-│   ├── __init__.py
-│   ├── app.py                  # FastAPI application factory
-│   ├── schemas.py              # Request/response Pydantic models
-│   ├── middleware.py           # Auth, rate limit, request ID
-│   └── routes.py               # /online/downloads endpoints (download + analysis)
-├── migrations/
-│   ├── env.py                  # Alembic async migration environment
-│   ├── script.py.mako
-│   └── versions/
-│       ├── 0001_create_downloads_table.py
-│       └── 0002_create_document_analyses_table.py
-└── tests/
-    ├── conftest.py             # Shared fixtures (fake/sequenced DNS, fake scanner)
-    ├── pdf_fixtures.py         # Hand-built valid/corrupt/encrypted PDFs
-    ├── unit/
-    │   ├── test_download_lifecycle.py
-    │   ├── test_url_validation.py
-    │   ├── test_ssrf_protection.py
-    │   ├── test_dns_revalidation.py     # connection-time re-validation
-    │   ├── test_proxy_enforcement.py    # proxy attestation + downloader wiring
-    │   ├── test_settings_fail_closed.py # production config refusals
-    │   ├── test_environment_classification.py
-    │   ├── test_mime_validation.py
-    │   ├── test_storage_isolation.py
-    │   ├── test_scanner.py
-    │   ├── test_repository.py
-    │   ├── test_handoff.py              # approved-only handoff gate
-    │   ├── test_document_processor.py   # PDF bounds, encryption, malformed input
-    │   ├── test_analysis_models.py      # provider schema + response sanitization
-    │   ├── test_analysis_settings.py
-    │   ├── test_analysis_egress.py      # analysis endpoint + destination checks
-    │   ├── test_analysis_repository.py  # job uniqueness, transitions, recovery
-    │   ├── test_analysis_service.py     # pipeline, retry, cancel, restart recovery
-    │   ├── test_analysis_api.py         # analysis endpoints, tenant isolation
-    │   ├── test_ip_policy.py
-    │   ├── test_domain_policy.py
-    │   ├── test_api_auth.py
-    │   └── test_policy_consistency.py
-    └── integration/
-        ├── test_downloader_http.py      # real sockets against a local HTTP server
-        └── test_analysis_adapter_http.py # adapter against a real local HTTP provider
+├── config/            # Fail-closed settings + JSON logging setup
+├── api/               # FastAPI app, routes, schemas, middleware
+├── models/            # SQLAlchemy models (downloads, analysis jobs)
+├── security/          # URL/DNS/IP policy, proxy attestation, egress chains
+├── services/          # Downloader, orchestrator, scanner, PDF processor, analysis
+├── storage/           # Zone-isolated storage (temporary/quarantine/approved)
+├── integrations/      # Approved-only handoff + provider contract v1 + adapter
+├── migrations/        # Alembic 0001/0002, run automatically at startup
+├── scripts/load_test.py  # bounded local load harness (not pytest, not capacity)
+├── docs/              # Deliverable documentation (index above)
+├── tests/
+│   ├── unit/          # policy, lifecycle, storage, scanner, API, observability
+│   └── integration/   # real loopback HTTP/TLS, tenant matrix, E2E demos
+├── Dockerfile         # slim, unprivileged runtime
+├── docker-compose.yml # local/demo API + ClamAV stack
+└── pyproject.toml
 ```
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the component and data-flow
+detail.
 
 ## Quick Start
 
@@ -105,15 +59,40 @@ cd secure-downloads
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
+cp .env.example .env    # edit; never commit real credentials
 
-# Run tests (unit + real-socket integration, including the local provider server)
-python -m pytest
+# Run the API (migrations run at startup)
+ENVIRONMENT=development uvicorn api.app:app --host 127.0.0.1 --port 8000
+```
 
-# Unit tests only
-python -m pytest tests/unit/ -v
+Test categories (see [docs/TEST_REPORT.md](docs/TEST_REPORT.md) for exact counts):
 
-# Real-HTTP analysis adapter tests only (local provider, no external network)
-python -m pytest tests/integration/test_analysis_adapter_http.py -v -m integration
+```bash
+pytest -q                          # full default suite (unit + integration + E2E)
+pytest tests/unit/ -q              # unit only
+pytest -m integration -q           # real loopback transport/app/DB (non-E2E)
+pytest -m e2e -q                   # DEMO 1-10 over real local TLS
+pytest -m real_clamav -q           # opt-in; skips without a real clamd
+```
+
+Real-ClamAV opt-in (never uses real malware; EICAR only):
+
+```bash
+SECURE_DOWNLOADS_CLAMAV_EICAR_TEST=1 \
+pytest tests/integration/test_clamav_optional.py -q -m real_clamav
+```
+
+Bounded local load harness (not a capacity model):
+
+```bash
+.venv/bin/python scripts/load_test.py --requests 40 --concurrency 8
+```
+
+Container (local/demo reference; no proxy bundled):
+
+```bash
+export API_AUTH_TOKEN="$(openssl rand -hex 32)"
+docker compose up --build
 ```
 
 ## API Endpoints
@@ -449,6 +428,23 @@ transient outcomes are retried. A failed job records a fixed, content-free
 5. **Per-request DNS revalidation is a gate, not IP pinning** — the same
    rebinding caveat as the download path applies (see "Connection security
    model").
+
+## Observability and logging
+
+- Every response carries `X-Request-ID` (client-supplied only when it matches
+  `^[A-Za-z0-9._:-]{1,128}$`), including `401` and `429` responses.
+- Application events are emitted as structured fields (`request_id`,
+  `download_id`, `tenant_id`, stage, verdict, counts). When the process has no
+  root logging handler, the service installs a JSON formatter
+  (`config/logging_setup.py`) at `LOG_LEVEL`; a host (uvicorn/pytest) keeps its
+  own configuration.
+- Logs never include bearer tokens, proxy credentials, document content, or
+  extracted text. API error messages are fixed text.
+- Startup deliberately builds the Alembic config without loading
+  `alembic.ini` logging, so migrations cannot disable the application's
+  loggers (a regression test covers this).
+- There is no metrics endpoint; alerting guidance is in
+  [docs/OPERATIONS_RUNBOOK.md](docs/OPERATIONS_RUNBOOK.md).
 
 ## Security Controls
 

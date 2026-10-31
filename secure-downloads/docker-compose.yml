@@ -1,0 +1,53 @@
+# Local/demo stack: API + ClamAV + persistent storage.
+#
+# This is NOT a production deployment:
+#   - no egress proxy is bundled (production requires one);
+#   - ENVIRONMENT defaults to development, so production fail-closed rules
+#     do not apply;
+#   - analysis defaults to disabled.
+#
+# For production-like use, set ENVIRONMENT=production, REQUIRE_EGRESS_PROXY=true,
+# EGRESS_PROXY_URL/EGRESS_PROXY_HEALTH_URL, ALLOWED_DOMAINS,
+# ANALYSIS_PROVIDER=http (+ credentials), and provide a real proxy, clamd,
+# PostgreSQL and TLS termination. Startup refuses unsafe production config.
+
+services:
+  api:
+    build: .
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:?set API_AUTH_TOKEN (never commit a real token)}
+      DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:////var/secure-download-storage/secure_downloads.db}
+      STORAGE_ROOT: /var/secure-download-storage
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: "3310"
+      EGRESS_PROXY_URL: ${EGRESS_PROXY_URL:-}
+      EGRESS_PROXY_HEALTH_URL: ${EGRESS_PROXY_HEALTH_URL:-}
+      REQUIRE_EGRESS_PROXY: ${REQUIRE_EGRESS_PROXY:-false}
+      ALLOWED_DOMAINS: ${ALLOWED_DOMAINS:-files.example.com}
+      ALLOWED_PORTS: ${ALLOWED_PORTS:-443}
+      DEFAULT_DOMAIN_POLICY: deny
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      ANALYSIS_PROVIDER: ${ANALYSIS_PROVIDER:-disabled}
+    ports:
+      - "8000:8000"
+    volumes:
+      - download-data:/var/secure-download-storage
+    depends_on:
+      clamav:
+        condition: service_healthy
+    restart: unless-stopped
+
+  clamav:
+    image: clamav/clamav:stable
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+volumes:
+  download-data:

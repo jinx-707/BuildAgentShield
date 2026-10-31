@@ -207,6 +207,9 @@ def test_api_health_reaches_worker(worker):
         browser_worker_url=f"http://127.0.0.1:{worker['port']}",
         browser_worker_timeout_seconds=30.0,
         browser_worker_health_timeout_seconds=5.0,
+        policy_backend="mock",
+        inspection_backend="mock",
+        database_url="",
     )
     app = create_app(settings)
 
@@ -230,6 +233,9 @@ def test_api_navigates_through_worker(worker, local_site):
         allowed_ports=f"80,443,{fixture_port}",
         allow_private_networks=True,
         dns_preflight_enabled=False,
+        policy_backend="mock",
+        inspection_backend="mock",
+        database_url="",
     )
     app = create_app(settings)
 
@@ -271,6 +277,9 @@ def test_api_session_navigate_and_extract_through_worker(worker, local_site):
         allowed_ports=f"80,443,{fixture_port}",
         allow_private_networks=True,
         dns_preflight_enabled=False,
+        policy_backend="mock",
+        inspection_backend="mock",
+        database_url="",
     )
     app = create_app(settings)
 
@@ -343,6 +352,9 @@ def test_api_actions_and_screenshot_through_worker(worker, local_site):
         allowed_ports=f"80,443,{fixture_port}",
         allow_private_networks=True,
         dns_preflight_enabled=False,
+        policy_backend="mock",
+        inspection_backend="mock",
+        database_url="",
     )
     app = create_app(settings)
     headers = {"X-Agent-ID": "integration-action-agent"}

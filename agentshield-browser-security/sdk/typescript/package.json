@@ -1,0 +1,13 @@
+{
+  "name": "@agentshield/sdk",
+  "version": "0.1.0",
+  "description": "AgentShield AI Agent Security TypeScript SDK",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

@@ -41,7 +41,7 @@ def pg_engine():
     return create_engine(DATABASE_URL, pool_pre_ping=True)
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def pg_db():
     if not pg_available:
         pytest.skip("DATABASE_URL not configured; PostgreSQL integration tests skipped")
@@ -325,9 +325,18 @@ def test_policy_versioning_and_rollback(pg_db):
         versions = r.json()
         assert len(versions) >= 2
 
+        # Fetch the version to rollback to
+        r = client.get(
+            f"/v1/organizations/{org.id}/policies/{policy_id}/versions",
+            headers=auth_headers(token),
+        )
+        assert r.status_code == 200, r.text
+        versions = r.json()
+        version_to_rollback = next(v for v in versions if v["version"] == 1)
+        
         r = client.post(
             f"/v1/organizations/{org.id}/policies/{policy_id}/rollback",
-            json={"version": 1},
+            json=version_to_rollback,
             headers=auth_headers(token),
         )
         assert r.status_code == 200, r.text

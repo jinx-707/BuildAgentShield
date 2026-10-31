@@ -80,6 +80,8 @@ class ApiAuthMiddleware(BaseHTTPMiddleware):
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+        # Mark that simple token auth succeeded so dependencies don't try to re-verify
+        request.state.simple_auth_validated = True
         return await call_next(request)
 
 

@@ -9,13 +9,13 @@ const environment: ApiEnvironment =
 
 function defaultBaseUrl() {
   if (typeof window !== "undefined" && window.location) {
-    const { origin, port, protocol } = window.location
-    if (port === "8443" || protocol === "file:") {
-      return "http://127.0.0.1:8000/api/v1"
+    const { hostname, origin } = window.location
+    if (hostname === "127.0.0.1" || hostname === "localhost") {
+      return "http://127.0.0.1:8000/v1"
     }
-    return `${origin}/api/v1`
+    return `${origin}/v1`
   }
-  return "http://127.0.0.1:8000/api/v1"
+  return "http://127.0.0.1:8000/v1"
 }
 
 export const apiBaseUrl = (
@@ -23,15 +23,16 @@ export const apiBaseUrl = (
 ).replace(/\/+$/, "")
 
 export const backendDemoCredentials = {
-  email: environment.VITE_AGENTSHIELD_DEMO_EMAIL || "admin@agentshield.local",
+  email: environment.VITE_AGENTSHIELD_DEMO_EMAIL || "admin@agentshield.dev",
   password: environment.VITE_AGENTSHIELD_DEMO_PASSWORD || "admin-change-me",
 }
 
 export const autoConnectBackend =
-  environment.VITE_AGENTSHIELD_AUTO_CONNECT !== "false"
+  environment.VITE_AGENTSHIELD_AUTO_CONNECT === "true"
 
 const TOKEN_KEY = "agentshield.access_token"
 const USER_KEY = "agentshield.session_user"
+const ORG_NAME_KEY = "agentshield.organization_name"
 
 export class ApiError extends Error {
   status: number
@@ -51,6 +52,8 @@ export type SessionUser = {
   role: string
   tenant_id: string
   permissions: string[]
+  organization_name?: string
+  full_name?: string | null
 }
 
 export type LoginResult = {
@@ -64,6 +67,7 @@ export type AgentRecord = Agent & {
   permissions?: string[]
   scopes?: Record<string, unknown>
   created_at?: string
+  agent_id?: string
 }
 
 export type PolicyRecord = {
@@ -76,6 +80,12 @@ export type PolicyRecord = {
   rule: string
   immutable?: boolean
   updated_at?: string
+  allowed_domains?: string[]
+  blocked_domains?: string[]
+  default_domain_policy?: string
+  allowed_ports?: string[]
+  allow_private_networks?: boolean
+  is_default?: boolean
 }
 
 export type QuarantineRecord = {
@@ -142,6 +152,112 @@ export type ToolExecutionResult = {
   approval?: { id: string; status: string; token?: string | null } | null
 }
 
+export type BrowserSession = {
+  session_id: string
+  state: string
+  status: string
+  created_at: string
+  last_used_at: string
+  expires_at: string
+  current_url: string | null
+}
+
+export type BrowserNavigationResult = {
+  request_id: string
+  requested_url: string
+  final_url: string
+  status_code: number | null
+  title: string | null
+  content: string
+  content_truncated: boolean
+  elapsed_ms: number
+  redirect_count: number
+  blocked_request_count: number
+  blocked_target_count: number
+  policy: { allowed: boolean; policy_name: string; reason: string }
+  inspection: {
+    inspector_name: string
+    findings: Array<{
+      rule_id: string
+      severity: string
+      message: string
+      location: Record<string, unknown> | string | null
+    }>
+    trust_label: string
+    highest_severity: string
+    summary: string
+  }
+}
+
+type BackendLoginResponse = {
+  access_token: string
+  token_type: string
+  organization_id: string
+  organization_name: string
+  role: string
+}
+
+type BackendUser = {
+  user_id: string
+  agent_id: string | null
+  organization_id: string
+  role: string
+  email: string
+  full_name: string | null
+}
+
+type BackendAgent = {
+  id: string
+  agent_id: string
+  name: string
+  status: string
+  created_at: string
+  last_activity_at: string | null
+}
+
+type BackendPolicy = {
+  id: string
+  organization_id: string
+  name: string
+  description: string | null
+  version: number
+  is_active: boolean
+  is_default: boolean
+  allowed_domains: string[]
+  blocked_domains: string[]
+  default_domain_policy: string
+  allowed_ports: string[]
+  allow_private_networks: boolean
+  agent_id: string | null
+  created_at: string
+}
+
+type BackendAuditEvent = {
+  id: string
+  event_type: string
+  event_category: string | null
+  actor: string | null
+  session_id: string | null
+  agent_id: string | null
+  target: string | null
+  decision: string | null
+  reason: string | null
+  severity: string
+  request_id: string | null
+  created_at: string
+}
+
+type BackendDashboard = {
+  registered_agents: number
+  active_sessions: number
+  total_requests: number
+  allowed_requests: number
+  blocked_requests: number
+  policy_violations: number
+  security_incidents: number
+  service_health: Record<string, string>
+}
+
 function readStorage(key: string) {
   try {
     return window.localStorage.getItem(key)
@@ -187,11 +303,131 @@ export function hasStoredSession() {
 export function clearSession() {
   removeStorage(TOKEN_KEY)
   removeStorage(USER_KEY)
+  removeStorage(ORG_NAME_KEY)
 }
 
 function storeSession(result: LoginResult) {
   writeStorage(TOKEN_KEY, result.access_token)
   writeStorage(USER_KEY, JSON.stringify(result.user))
+  if (result.user.organization_name) {
+    writeStorage(ORG_NAME_KEY, result.user.organization_name)
+  }
+}
+
+function organizationId() {
+  const user = getStoredUser()
+  if (!user?.tenant_id) {
+    throw new ApiError("Sign in to load organization data.", 401)
+  }
+  return user.tenant_id
+}
+
+function organizationPath(path: string) {
+  return `/organizations/${encodeURIComponent(organizationId())}${path}`
+}
+
+function mapUser(
+  user: BackendUser,
+  login?: BackendLoginResponse,
+): SessionUser {
+  return {
+    id: user.user_id,
+    email: user.email,
+    role: user.role || login?.role || "viewer",
+    tenant_id: user.organization_id || login?.organization_id || "",
+    organization_name:
+      login?.organization_name || readStorage(ORG_NAME_KEY) || undefined,
+    full_name: user.full_name,
+    permissions: user.role === "owner" || user.role === "admin" ? ["*"] : [],
+  }
+}
+
+function initials(name: string) {
+  return name
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || "")
+    .join("")
+}
+
+function mapAgent(row: BackendAgent): AgentRecord {
+  const status =
+    row.status === "active"
+      ? "Active"
+      : row.status === "revoked"
+        ? "Disabled"
+        : row.status
+  return {
+    id: row.agent_id,
+    agent_id: row.agent_id,
+    name: row.name,
+    role: "Browser agent",
+    status,
+    requests: 0,
+    initials: initials(row.name) || "AG",
+    color: "violet",
+    created_at: row.created_at,
+  }
+}
+
+function mapPolicy(row: BackendPolicy): PolicyRecord {
+  const allowed = row.allowed_domains || []
+  const blocked = row.blocked_domains || []
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description || "Browser egress policy.",
+    category: "Browser egress",
+    version: row.version,
+    active: row.is_active,
+    rule: [
+      `default: ${row.default_domain_policy}`,
+      `allowed: ${allowed.join(", ") || "(none)"}`,
+      `blocked: ${blocked.join(", ") || "(none)"}`,
+      `ports: ${(row.allowed_ports || []).join(", ") || "(none)"}`,
+    ].join("\n"),
+    updated_at: row.created_at,
+    allowed_domains: allowed,
+    blocked_domains: blocked,
+    default_domain_policy: row.default_domain_policy,
+    allowed_ports: row.allowed_ports,
+    allow_private_networks: row.allow_private_networks,
+    is_default: row.is_default,
+  }
+}
+
+function riskForSeverity(severity: string) {
+  const normalized = severity.toLowerCase()
+  if (normalized === "critical") return 95
+  if (normalized === "high") return 82
+  if (normalized === "medium") return 55
+  if (normalized === "low") return 28
+  return 10
+}
+
+function decisionFor(event: BackendAuditEvent): AuditEvent["decision"] {
+  const decision = (event.decision || "").toLowerCase()
+  if (decision === "deny" || decision === "blocked") return "Blocked"
+  if (event.event_type === "navigation.blocked_redirect") return "Blocked"
+  if (event.event_type === "security.violation") return "Blocked"
+  if (event.event_type === "action.refuse") return "Blocked"
+  if (decision === "quarantined") return "Quarantined"
+  if (decision === "approval") return "Approval"
+  return "Allowed"
+}
+
+function mapAuditEvent(event: BackendAuditEvent): AuditEvent {
+  return {
+    id: event.id,
+    agent: event.actor || event.agent_id || "system",
+    tool: event.event_type,
+    description:
+      event.reason || event.target || event.request_id || event.event_type,
+    decision: decisionFor(event),
+    risk: riskForSeverity(event.severity || "info"),
+    time: relativeTime(event.created_at),
+  }
 }
 
 type RequestOptions = {
@@ -200,6 +436,7 @@ type RequestOptions = {
   auth?: boolean
   headers?: Record<string, string>
   agentKey?: string
+  agentId?: string
   timeoutMs?: number
 }
 
@@ -207,13 +444,14 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   const controller = new AbortController()
   const timeout = window.setTimeout(
     () => controller.abort(),
-    options.timeoutMs ?? 8000,
+    options.timeoutMs ?? 15000,
   )
   const headers: Record<string, string> = { ...options.headers }
   if (options.body !== undefined) headers["Content-Type"] = "application/json"
   const token = getAccessToken()
   if (options.agentKey) headers["X-Agent-Key"] = options.agentKey
-  else if (options.auth !== false && token)
+  if (options.agentId) headers["X-Agent-ID"] = options.agentId
+  if (options.auth !== false && token)
     headers.Authorization = `Bearer ${token}`
   try {
     const response = await fetch(`${apiBaseUrl}${path}`, {
@@ -229,12 +467,18 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       ? await response.json().catch(() => null)
       : await response.text().catch(() => "")
     if (!response.ok) {
-      const detail =
+      const envelope =
         payload && typeof payload === "object" && "detail" in payload
-          ? String((payload as { detail: unknown }).detail)
-          : typeof payload === "string" && payload
-            ? payload
-            : `Request failed with status ${response.status}`
+          ? (payload as { detail: unknown }).detail
+          : payload
+      const detail =
+        envelope && typeof envelope === "object" && "message" in envelope
+          ? String((envelope as { message: unknown }).message)
+          : typeof envelope === "string" && envelope
+            ? envelope
+            : envelope
+              ? JSON.stringify(envelope)
+              : `Request failed with status ${response.status}`
       throw new ApiError(detail, response.status, payload)
     }
     return payload as T
@@ -256,13 +500,27 @@ export async function login(
   email: string,
   password: string,
 ): Promise<LoginResult> {
-  const result = await request<LoginResult>("/auth/login", {
+  const auth = await request<BackendLoginResponse>("/auth/login", {
     method: "POST",
     body: { email, password },
     auth: false,
   })
-  storeSession(result)
-  return result
+  writeStorage(TOKEN_KEY, auth.access_token)
+  try {
+    const me = await request<BackendUser>("/auth/me")
+    const user = mapUser(me, auth)
+    const result: LoginResult = {
+      access_token: auth.access_token,
+      token_type: auth.token_type,
+      expires_in: 3600,
+      user,
+    }
+    storeSession(result)
+    return result
+  } catch (error) {
+    clearSession()
+    throw error
+  }
 }
 
 export async function loginDemoBackend() {
@@ -270,7 +528,7 @@ export async function loginDemoBackend() {
 }
 
 export async function me() {
-  return request<SessionUser & { agents?: AgentRecord[] }>("/auth/me")
+  return mapUser(await request<BackendUser>("/auth/me"))
 }
 
 export async function logout() {
@@ -294,23 +552,36 @@ export async function restoreSession() {
 }
 
 export async function getAgents() {
-  const result = await request<{ items: AgentRecord[] }>("/agents")
-  return result.items
+  const result = await request<BackendAgent[]>(organizationPath("/agents"))
+  return result.map(mapAgent)
 }
 
 export async function createAgent(
   name: string,
-  role: string,
-  permissions?: string[],
-  scopes?: Record<string, unknown>,
+  _role: string,
+  _permissions?: string[],
+  _scopes?: Record<string, unknown>,
 ) {
-  return request<{ agent: AgentRecord; api_key: string; key_prefix: string }>(
-    "/agents",
-    {
-      method: "POST",
-      body: { name, role, permissions, scopes },
-    },
+  const result = await request<{ agent_id: string; name: string; secret: string }>(
+    organizationPath("/agents"),
+    { method: "POST", body: { name } },
   )
+  const agent: AgentRecord = {
+    id: result.agent_id,
+    agent_id: result.agent_id,
+    name: result.name,
+    role: "Browser agent",
+    status: "Active",
+    requests: 0,
+    initials: initials(result.name) || "AG",
+    color: "violet",
+    created_at: new Date().toISOString(),
+  }
+  return {
+    agent,
+    api_key: result.secret,
+    key_prefix: result.secret.slice(0, 12),
+  }
 }
 
 export async function updateAgent(
@@ -323,38 +594,57 @@ export async function updateAgent(
     scopes?: Record<string, unknown>
   },
 ) {
-  return request<AgentRecord>(`/agents/${encodeURIComponent(agentId)}`, {
-    method: "PATCH",
-    body: patch,
-  })
-}
-
-export async function rotateAgentKey(agentId: string) {
-  return request<{ agent_id: string; api_key: string; key_prefix: string }>(
-    `/agents/${encodeURIComponent(agentId)}/rotate-key`,
-    { method: "POST" },
+  if (patch.status === "Disabled") {
+    await request(`/agents/${encodeURIComponent(agentId)}/revoke`, {
+      method: "POST",
+    })
+    return {
+      id: agentId,
+      agent_id: agentId,
+      name: agentId,
+      role: "Browser agent",
+      status: "Disabled",
+      requests: 0,
+      initials: "AG",
+      color: "violet",
+    } as AgentRecord
+  }
+  if (patch.status === "Active") {
+    throw new ApiError(
+      "The browser-security API cannot re-enable a revoked agent. Create a new agent instead.",
+      501,
+    )
+  }
+  throw new ApiError(
+    "Capability permissions and scopes are not supported by the browser-security API.",
+    501,
   )
 }
 
-export async function getApprovals(status?: string) {
-  const query = status ? `?status=${encodeURIComponent(status)}` : ""
-  const result = await request<{ items: Approval[]; pending: number }>(
-    `/approvals${query}`,
-  )
-  return result.items
-}
-
-export async function approveRequest(approvalId: string, comment: string) {
-  return request<Approval & { token: string }>(
-    `/approvals/${encodeURIComponent(approvalId)}/approve`,
-    { method: "POST", body: { comment } },
+export async function rotateAgentKey(
+  _agentId: string,
+): Promise<{ api_key: string; key_prefix: string }> {
+  throw new ApiError(
+    "Agent key rotation is not supported by the browser-security API. Create a new agent to issue a new key.",
+    501,
   )
 }
 
-export async function rejectRequest(approvalId: string, comment: string) {
-  return request<Approval>(
-    `/approvals/${encodeURIComponent(approvalId)}/reject`,
-    { method: "POST", body: { comment } },
+export async function getApprovals(_status?: string) {
+  return [] as Approval[]
+}
+
+export async function approveRequest(_approvalId: string, _comment: string) {
+  throw new ApiError(
+    "The browser-security API does not expose an approval queue.",
+    501,
+  )
+}
+
+export async function rejectRequest(_approvalId: string, _comment: string) {
+  throw new ApiError(
+    "The browser-security API does not expose an approval queue.",
+    501,
   )
 }
 
@@ -372,119 +662,275 @@ export function relativeTime(value: string) {
   return `${days} day${days === 1 ? "" : "s"} ago`
 }
 
-function normalizeEvent(event: AuditEvent) {
-  return { ...event, time: relativeTime(event.time) }
-}
-
-export async function getAudit(decision?: string, query?: string, pageSize = 200) {
+export async function getAudit(
+  decision?: string,
+  query?: string,
+  pageSize = 200,
+) {
   const params = new URLSearchParams()
-  if (decision && decision !== "All decisions") params.set("decision", decision)
-  if (query) params.set("query", query)
-  params.set("page", "1")
-  params.set("page_size", String(pageSize))
-  const result = await request<{
-    items: AuditEvent[]
-    total: number
-    page: number
-    page_size: number
-  }>(`/audit?${params.toString()}`)
-  return { ...result, items: result.items.map(normalizeEvent) }
+  params.set("limit", String(pageSize))
+  params.set("offset", "0")
+  const result = await request<BackendAuditEvent[]>(
+    `${organizationPath("/audit")}?${params.toString()}`,
+  )
+  let items = result.map(mapAuditEvent)
+  if (decision && decision !== "All decisions") {
+    items = items.filter((event) => event.decision === decision)
+  }
+  if (query) {
+    const needle = query.toLowerCase()
+    items = items.filter((event) =>
+      `${event.agent} ${event.tool} ${event.id} ${event.description}`
+        .toLowerCase()
+        .includes(needle),
+    )
+  }
+  return { items, total: items.length, page: 1, page_size: pageSize }
 }
 
-export async function verifyAudit() {
-  return request<AuditVerification>("/audit/verify")
+export async function getBrowserAuditEvents(limit = 50) {
+  const result = await request<BackendAuditEvent[]>(
+    `${organizationPath("/audit")}?limit=${limit}`,
+  )
+  return result.map(mapAuditEvent)
+}
+
+export async function verifyAudit(): Promise<AuditVerification> {
+  throw new ApiError(
+    "Audit hash-chain verification is not available in the browser-security API.",
+    501,
+  )
 }
 
 export async function downloadAudit(format: "json" | "csv") {
-  const token = getAccessToken()
-  const response = await fetch(`${apiBaseUrl}/audit/export?format=${format}`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-    credentials: "omit",
-  })
-  if (!response.ok) {
-    throw new ApiError(`Audit export failed with status ${response.status}`, response.status)
+  const { items } = await getAudit(undefined, undefined, 1000)
+  if (format === "json") {
+    return new Blob([JSON.stringify(items, null, 2)], {
+      type: "application/json",
+    })
   }
-  return response.blob()
+  const rows = [
+    "id,agent,tool,decision,risk,time",
+    ...items.map((event) =>
+      [event.id, event.agent, event.tool, event.decision, event.risk, event.time]
+        .map((value) => `"${String(value).replace(/"/g, '""')}"`)
+        .join(","),
+    ),
+  ]
+  return new Blob([rows.join("\n")], { type: "text/csv" })
 }
 
 export async function getPolicies() {
-  const result = await request<{ items: PolicyRecord[] }>("/policies")
-  return result.items
+  const result = await request<BackendPolicy[]>(organizationPath("/policies"))
+  return result.map(mapPolicy)
 }
 
-export async function createPolicy(policy: {
+export type PolicyDraft = {
   name: string
   description: string
   category?: string
-  rule: string
-}) {
-  return request<PolicyRecord>("/policies", {
+  rule?: string
+  allowed_domains?: string[]
+  blocked_domains?: string[]
+  default_domain_policy?: "allow" | "deny"
+  allowed_ports?: string[]
+  allow_private_networks?: boolean
+  is_default?: boolean
+}
+
+export async function createPolicy(policy: PolicyDraft) {
+  const body = {
+    name: policy.name,
+    description: policy.description,
+    allowed_domains: policy.allowed_domains || [],
+    blocked_domains: policy.blocked_domains || [],
+    default_domain_policy: policy.default_domain_policy || "deny",
+    allowed_ports: policy.allowed_ports || ["80", "443"],
+    allow_private_networks: policy.allow_private_networks ?? false,
+    is_default: policy.is_default ?? false,
+  }
+  const result = await request<BackendPolicy>(organizationPath("/policies"), {
     method: "POST",
-    body: { category: "Custom policy", ...policy },
+    body,
   })
+  return mapPolicy(result)
 }
 
 export async function updatePolicy(policyId: string, active: boolean) {
-  return request<PolicyRecord>(`/policies/${encodeURIComponent(policyId)}`, {
-    method: "PATCH",
-    body: { active },
-  })
+  const result = await request<BackendPolicy>(
+    `/policies/${encodeURIComponent(policyId)}`,
+    { method: "PATCH", body: { is_active: active } },
+  )
+  return mapPolicy(result)
 }
 
 export async function getQuarantine() {
-  const result = await request<{ items: QuarantineRecord[] }>("/quarantine")
-  return result.items
+  return [] as QuarantineRecord[]
 }
 
-export async function releaseQuarantine(itemId: string, comment: string) {
-  return request<QuarantineRecord>(
-    `/quarantine/${encodeURIComponent(itemId)}/release`,
-    { method: "POST", body: { comment } },
+export async function releaseQuarantine(_itemId: string, _comment: string) {
+  throw new ApiError(
+    "The browser-security API does not expose a quarantine queue.",
+    501,
   )
 }
 
 export async function getWorkspace() {
-  return request<{ id: string; slug: string; name: string }>("/workspace")
+  const user = getStoredUser()
+  const id = organizationId()
+  const name =
+    user?.organization_name || readStorage(ORG_NAME_KEY) || "AgentShield"
+  return {
+    id,
+    slug: name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
+    name,
+  }
 }
 
-export async function updateWorkspace(name: string) {
-  return request<{ id: string; slug: string; name: string }>("/workspace", {
-    method: "PATCH",
-    body: { name },
-  })
+export async function updateWorkspace(
+  _name: string,
+): Promise<{ id: string; slug: string; name: string }> {
+  throw new ApiError(
+    "Workspace renaming is not exposed by the browser-security API.",
+    501,
+  )
 }
 
 export async function getOverviewStats(period: "24h" | "7d" | "30d") {
-  return request<OverviewStats>(`/stats/overview?period=${period}`)
+  const [dashboard, audit] = await Promise.all([
+    request<BackendDashboard>(organizationPath("/dashboard")),
+    request<BackendAuditEvent[]>(
+      `${organizationPath("/audit")}?limit=500`,
+    ),
+  ])
+  const bucketCount = period === "24h" ? 8 : period === "7d" ? 7 : 6
+  const windowMs =
+    period === "24h"
+      ? 24 * 60 * 60 * 1000
+      : period === "7d"
+        ? 7 * 24 * 60 * 60 * 1000
+        : 30 * 24 * 60 * 60 * 1000
+  const now = Date.now()
+  const series = Array.from({ length: bucketCount }, (_, index) => {
+    const start = now - windowMs + (windowMs / bucketCount) * index
+    const end = start + windowMs / bucketCount
+    const bucket = audit.filter((event) => {
+      const time = new Date(event.created_at).getTime()
+      return time >= start && time < end
+    })
+    return {
+      time: new Date(start).toISOString(),
+      label:
+        period === "24h"
+          ? `${String(new Date(start).getHours()).padStart(2, "0")}:00`
+          : new Date(start).toLocaleDateString(undefined, {
+              month: "short",
+              day: "numeric",
+            }),
+      allowed: bucket.filter((event) => decisionFor(event) === "Allowed").length,
+      blocked: bucket.filter((event) => decisionFor(event) === "Blocked").length,
+    }
+  })
+  const severityCounts = audit.reduce<Record<string, number>>((acc, event) => {
+    const key = (event.severity || "low").toLowerCase()
+    acc[key] = (acc[key] || 0) + 1
+    return acc
+  }, {})
+  return {
+    period,
+    total_requests: dashboard.total_requests,
+    allowed_requests: dashboard.allowed_requests,
+    blocked_threats: dashboard.blocked_requests,
+    pending_approvals: 0,
+    approval_requests: 0,
+    active_agents: dashboard.registered_agents,
+    total_agents: dashboard.registered_agents,
+    series,
+    risk_distribution: {
+      critical: severityCounts.critical || 0,
+      high: severityCounts.high || 0,
+      medium: severityCounts.medium || 0,
+      low: severityCounts.low || 0,
+    },
+    integrations: Object.entries(dashboard.service_health || {}).map(
+      ([name, status]) => ({
+        name,
+        status,
+        detail: `${name.replace(/_/g, " ")}: ${status}`,
+      }),
+    ),
+    mode: "database-backed browser security",
+  } satisfies OverviewStats
 }
 
 export async function getIntegrationHealth() {
-  return request<{
-    items: Array<{ name: string; status: string; detail: string }>
-    gateway: string
-    opa: string
-  }>("/integrations/health")
+  const dashboard = await request<BackendDashboard>(
+    organizationPath("/dashboard"),
+  )
+  return {
+    items: Object.entries(dashboard.service_health || {}).map(
+      ([name, status]) => ({
+        name,
+        status,
+        detail: `${name.replace(/_/g, " ")}: ${status}`,
+      }),
+    ),
+    gateway: dashboard.service_health?.api || "unknown",
+    opa: dashboard.service_health?.policy_engine || "unknown",
+  }
 }
 
-export async function getTools() {
-  return request<{ items: Array<Record<string, unknown>> }>("/tools")
+export async function getAttackScenarios() {
+  const results = await request<{
+    scenarios: Array<{
+      scenario_id: string
+      scenario_name: string
+      threat_category: string | null
+    }>
+  }>("/attack-simulation/scenarios")
+  return results.scenarios.map((s) => ({
+    id: s.scenario_id,
+    name: s.scenario_name,
+    description: s.threat_category || "",
+    category: s.threat_category || "",
+  }))
 }
 
-export async function runSimulator(scenarioIds: string[]) {
-  return request<{
-    items: SimulatorResult[]
-    passed: number
-    total: number
-    mode: string
-  }>("/simulator/run", {
+export async function runSimulator(_scenarioIds: string[]) {
+  const results = await request<{
+    results: Array<{
+      scenario_id: string
+      scenario_name: string
+      enforcement_result: string
+      policy_decision: string
+      evidence?: unknown
+    }>
+  }>("/attack-simulation/run", {
     method: "POST",
-    body: { scenario_ids: scenarioIds },
+    body: { organization_id: organizationId() },
+    timeoutMs: 120000,
   })
+  const items: SimulatorResult[] = results.results.map((result) => ({
+    id: result.scenario_id,
+    name: result.scenario_name,
+    expected: "PASS",
+    actual: result.enforcement_result,
+    passed: result.enforcement_result === "PASS",
+    risk: result.policy_decision === "deny" ? 10 : 85,
+    executed: true,
+    reason: `${result.policy_decision} · ${result.enforcement_result}`,
+  }))
+  return {
+    items,
+    passed: items.filter((item) => item.passed).length,
+    total: items.length,
+    mode: "database-backed browser security",
+  }
 }
 
 export async function executeTool(
-  agentKey: string,
-  requestBody: {
+  _agentKey: string,
+  _requestBody: {
     request_id: string
     tool_name: string
     arguments: Record<string, unknown>
@@ -492,17 +938,91 @@ export async function executeTool(
     provenance?: Record<string, unknown>
     approval_token?: string
   },
-  options: { idempotencyKey?: string; approvalToken?: string } = {},
+  _options: { idempotencyKey?: string; approvalToken?: string } = {},
 ) {
-  const headers: Record<string, string> = {}
-  if (options.idempotencyKey) headers["Idempotency-Key"] = options.idempotencyKey
-  if (options.approvalToken) headers["X-Approval-Token"] = options.approvalToken
-  return request<ToolExecutionResult>("/gateway/execute", {
+  throw new ApiError(
+    "Tool gateway execution is not part of the browser-security API.",
+    501,
+  )
+}
+
+export async function createBrowserSession(
+  agentId: string,
+  options: { idleTimeoutMs?: number; maxAgeMs?: number } = {},
+) {
+  return request<BrowserSession>("/browser/session", {
     method: "POST",
-    body: requestBody,
-    agentKey,
-    headers,
+    agentId,
+    body: {
+      idle_timeout_ms: options.idleTimeoutMs,
+      max_age_ms: options.maxAgeMs,
+    },
   })
+}
+
+export async function getBrowserSession(agentId: string, sessionId: string) {
+  return request<BrowserSession>(
+    `/browser/session/${encodeURIComponent(sessionId)}`,
+    { agentId },
+  )
+}
+
+export async function closeBrowserSession(agentId: string, sessionId: string) {
+  return request<{ session_id: string; closed: boolean; closing: boolean }>(
+    `/browser/session/${encodeURIComponent(sessionId)}`,
+    { method: "DELETE", agentId },
+  )
+}
+
+export async function navigateBrowser(
+  agentId: string,
+  url: string,
+  sessionId?: string,
+) {
+  try {
+    return await request<BrowserNavigationResult>("/browser/navigate", {
+      method: "POST",
+      agentId,
+      body: { url, session_id: sessionId, wait_until: "domcontentloaded" },
+      timeoutMs: 60000,
+    })
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 403) {
+      const envelope = error.details as {
+        detail?: { code?: string; message?: string }
+      } | null
+      const code = envelope?.detail?.code
+      const blockedMessage = envelope?.detail?.message || error.message
+      if (code === "DOMAIN_BLOCKED" || code === "PRIVATE_NETWORK_BLOCKED") {
+        return {
+          request_id: crypto.randomUUID(),
+          requested_url: url,
+          final_url: url,
+          status_code: null,
+          title: null,
+          content: "",
+          content_truncated: false,
+          elapsed_ms: 0,
+          redirect_count: 0,
+          blocked_request_count: 0,
+          blocked_target_count: 1,
+          policy: {
+            allowed: false,
+            policy_name: "Active browser egress policy",
+            reason: blockedMessage,
+          },
+          inspection: {
+            inspector_name: "egress-policy",
+            findings: [],
+            trust_label: "blocked",
+            highest_severity: "high",
+            summary: "Destination rejected before the worker loaded it.",
+          },
+        } satisfies BrowserNavigationResult
+      }
+    }
+    throw error
+  }
 }
 
 export function triggerDownload(blob: Blob, filename: string) {
@@ -510,6 +1030,8 @@ export function triggerDownload(blob: Blob, filename: string) {
   const link = document.createElement("a")
   link.href = url
   link.download = filename
+  document.body.appendChild(link)
   link.click()
+  link.remove()
   URL.revokeObjectURL(url)
 }

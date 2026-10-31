@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+*.db
+*.sqlite3
+storage/
+htmlcov/
+.coverage
+.git/
+.gitignore
+tests/
+scripts/
+docs/
+README.md

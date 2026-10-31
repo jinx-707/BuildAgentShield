@@ -23,6 +23,7 @@ from app.enterprise.rbac import (
     principal_from_membership,
     principal_from_agent,
     role_has_permission,
+    get_role_permissions,
 )
 from app.db.models import User, OrganizationUser, Agent
 
@@ -111,6 +112,10 @@ def _resolve_principal_from_credentials(
     if not token:
         return None
 
+    # If simple token auth was already validated by middleware, skip further processing
+    if getattr(request.state, "simple_auth_validated", False):
+        return None
+
     # Try JWT first
     payload = decode_access_token(token)
     if payload:
@@ -124,7 +129,7 @@ def _resolve_principal_from_credentials(
             )
         permissions = set()
         for role in roles:
-            permissions.update(role_has_permission(role))
+            permissions.update(get_role_permissions(role))
         return Principal(
             user_id=sub if not sub.startswith("agent-") else None,
             agent_id=sub if sub.startswith("agent-") else None,

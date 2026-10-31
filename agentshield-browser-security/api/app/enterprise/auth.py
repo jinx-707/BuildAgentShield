@@ -5,6 +5,7 @@ management. Organization-scoped: every authenticated principal is bound to
 one or more organizations through membership records.
 """
 
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -22,9 +23,38 @@ from app.db.models import (
 )
 from app.db.base import get_db_session
 
-JWT_SECRET = "agentshield-dev-secret-change-in-production"
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
+_INSECURE_DEFAULT = "INSECURE-dev-default-change-me"
+
+
+def _get_jwt_secret() -> str:
+    """Return the active JWT secret.
+
+    Prefers the Settings object (which reads JWT_SECRET from the environment
+    via pydantic-settings).  Falls back to reading the env var directly so
+    the auth module can be imported without triggering a full Settings
+    initialisation cycle (e.g. during Alembic migrations).
+    """
+    try:
+        from app.config import get_settings  # local import to avoid circularity
+        return get_settings().jwt_secret.get_secret_value()
+    except Exception:
+        return os.environ.get("JWT_SECRET", _INSECURE_DEFAULT)
+
+
+def _assert_not_production_default() -> None:
+    """Raise at startup in production if the insecure default secret is used."""
+    if os.environ.get("ENVIRONMENT", "development").lower() == "production":
+        secret = _get_jwt_secret()
+        if secret == _INSECURE_DEFAULT:
+            raise RuntimeError(
+                "JWT_SECRET environment variable must be set to a strong random value "
+                "in production. "
+                "Refusing to start with the insecure development default. "
+                "Generate one with: python3 -c \"import secrets; print(secrets.token_hex(32))\""
+            )
 
 
 def hash_password(password: str) -> str:
@@ -56,12 +86,12 @@ def create_access_token(
             minutes=ACCESS_TOKEN_EXPIRE_MINUTES
         )
     to_encode["exp"] = expire
-    return jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return jwt.encode(to_encode, _get_jwt_secret(), algorithm=JWT_ALGORITHM)
 
 
 def decode_access_token(token: str) -> Optional[dict]:
     try:
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return jwt.decode(token, _get_jwt_secret(), algorithms=[JWT_ALGORITHM])
     except JWTError:
         return None
 

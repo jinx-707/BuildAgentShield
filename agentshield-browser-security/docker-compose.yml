@@ -1,6 +1,9 @@
-name: agentshield-browser-security
+name: agentshield-cyber-range
 
 services:
+  # ============================================================
+  # CORE PROFILE — Always running infrastructure
+  # ============================================================
   postgres:
     image: postgres:16-alpine
     env_file:
@@ -15,7 +18,8 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data/pgdata
     networks:
-      - edge
+      - agentshield_control
+    profiles: ["core"]
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
@@ -44,7 +48,8 @@ services:
     volumes:
       - redis_data:/data
     networks:
-      - edge
+      - agentshield_control
+    profiles: ["core"]
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
@@ -64,13 +69,16 @@ services:
 
   api:
     build:
-      context: ./api
+      context: ./agentshield-browser-security/api
     env_file:
       - .env
     environment:
       BROWSER_WORKER_URL: http://browser-worker:8080
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-agentshield}:${POSTGRES_PASSWORD:-agentshield-dev-password}@postgres:5432/${POSTGRES_DB:-agentshield}
       REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:-INSECURE-dev-default-change-me}
+      SIMULATION_CONTROLLER_URL: http://simulation-controller:8090
+      EVIDENCE_COLLECTOR_URL: http://evidence-collector:8091
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
     depends_on:
@@ -79,8 +87,9 @@ services:
       browser-worker:
         condition: service_healthy
     networks:
-      - edge
+      - agentshield_control
       - worker-net
+    profiles: ["core"]
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
@@ -91,10 +100,16 @@ services:
     pids_limit: 256
     mem_limit: 512m
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready')\""]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
 
   browser-worker:
     build:
-      context: ./worker
+      context: ./agentshield-browser-security/worker
     env_file:
       - .env
     environment:
@@ -105,6 +120,7 @@ services:
       EGRESS_PROXY_URL: http://egress-proxy:3128
       EGRESS_PROXY_HEALTH_URL: http://egress-proxy:9090/health/ready
       BROWSER_ALLOW_PRIVATE_NETWORKS: "false"
+      SIMULATION_MODE: "true"
     expose:
       - "8080"
     depends_on:
@@ -112,6 +128,8 @@ services:
         condition: service_healthy
     networks:
       - worker-net
+      - agentshield_egress
+    profiles: ["core"]
     read_only: true
     tmpfs:
       - /tmp:size=512m,mode=1777
@@ -140,7 +158,7 @@ services:
 
   egress-proxy:
     build:
-      context: ./proxy
+      context: ./agentshield-browser-security/proxy
     environment:
       PROXY_HOST: 0.0.0.0
       PROXY_PORT: "3128"
@@ -152,6 +170,7 @@ services:
       PROXY_DEFAULT_DOMAIN_POLICY: ${DEFAULT_DOMAIN_POLICY:-deny}
       PROXY_ALLOWED_PORTS: ${ALLOWED_PORTS:-80,443}
       PROXY_ALLOW_PRIVATE_NETWORKS: "false"
+      PROXY_SIMULATION_MODE: "true"
     dns:
       - ${PROXY_DNS_SERVER:-1.1.1.1}
     expose:
@@ -159,7 +178,8 @@ services:
       - "9090"
     networks:
       - worker-net
-      - egress-net
+      - agentshield_egress
+    profiles: ["core"]
     read_only: true
     tmpfs:
       - /tmp:size=32m,mode=1777
@@ -173,18 +193,21 @@ services:
 
   frontend:
     build:
-      context: ./frontend
+      context: ./BuildAgentShield-main
     env_file:
       - .env
     environment:
       NEXT_PUBLIC_API_BASE_URL: http://127.0.0.1:${API_PORT:-8000}
+      VITE_AGENTSHIELD_API_URL: http://127.0.0.1:${API_PORT:-8000}/v1
+      VITE_AGENTSHIELD_AUTO_CONNECT: "true"
     ports:
       - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
     depends_on:
       api:
         condition: service_healthy
     networks:
-      - edge
+      - agentshield_control
+    profiles: ["core"]
     read_only: true
     tmpfs:
       - /tmp:size=128m,mode=1777
@@ -204,12 +227,487 @@ services:
       start_period: 10s
       retries: 3
 
+  # ============================================================
+  # LAB PROFILE — Simulation targets and orchestrator
+  # ============================================================
+  simulation-controller:
+    build:
+      context: ./cyber-range/simulation-controller
+    env_file:
+      - .env
+    environment:
+      CONTROLLER_HOST: 0.0.0.0
+      CONTROLLER_PORT: 8090
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-agentshield}:${POSTGRES_PASSWORD:-agentshield-dev-password}@postgres:5432/${POSTGRES_DB:-agentshield}
+      REDIS_URL: redis://redis:6379/0
+      API_URL: http://api:8000
+      BROWSER_WORKER_URL: http://browser-worker:8080
+      EGRESS_PROXY_URL: http://egress-proxy:3128
+      EVIDENCE_COLLECTOR_URL: http://evidence-collector:8091
+      PROMPT_INJECTION_TARGET_URL: http://prompt-injection-target:8081
+      PHISHING_TARGET_URL: http://phishing-target:8082
+      SSRF_TARGET_URL: http://ssrf-target:8083
+      MALICIOUS_DOWNLOAD_TARGET_URL: http://malicious-download-target:8084
+      RESOURCE_EXHAUSTION_TARGET_URL: http://resource-exhaustion-target:8085
+      DNS_REBINDING_TARGET_URL: http://dns-rebinding-target:8086
+      DATA_EXFILTRATION_SINK_URL: http://data-exfiltration-sink:8087
+      SIMULATION_NETWORK: agentshield_simulation
+      EGRESS_NETWORK: agentshield_egress
+    expose:
+      - "8090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+      browser-worker:
+        condition: service_healthy
+      egress-proxy:
+        condition: service_started
+    networks:
+      - agentshield_control
+      - agentshield_simulation
+    profiles: ["lab"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 512m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8090/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  evidence-collector:
+    build:
+      context: ./cyber-range/evidence-collector
+    env_file:
+      - .env
+    environment:
+      COLLECTOR_HOST: 0.0.0.0
+      COLLECTOR_PORT: 8091
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-agentshield}:${POSTGRES_PASSWORD:-agentshield-dev-password}@postgres:5432/${POSTGRES_DB:-agentshield}
+      REDIS_URL: redis://redis:6379/0
+    expose:
+      - "8091"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - agentshield_control
+      - agentshield_simulation
+    profiles: ["lab"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8091/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # --- Attack Targets ---
+  prompt-injection-target:
+    build:
+      context: ./cyber-range/targets/prompt-injection
+    env_file:
+      - .env
+    environment:
+      TARGET_HOST: 0.0.0.0
+      TARGET_PORT: 8081
+      EVIDENCE_COLLECTOR_URL: http://evidence-collector:8091
+      SCENARIO_ID: prompt-injection
+    expose:
+      - "8081"
+    networks:
+      - agentshield_simulation
+      - agentshield_egress
+    profiles: ["lab"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8081/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  phishing-target:
+    build:
+      context: ./cyber-range/targets/phishing
+    env_file:
+      - .env
+    environment:
+      TARGET_HOST: 0.0.0.0
+      TARGET_PORT: 8082
+      EVIDENCE_COLLECTOR_URL: http://evidence-collector:8091
+      SCENARIO_ID: phishing
+    expose:
+      - "8082"
+    networks:
+      - agentshield_simulation
+      - agentshield_egress
+    profiles: ["lab"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8082/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  ssrf-target:
+    build:
+      context: ./cyber-range/targets/ssrf
+    env_file:
+      - .env
+    environment:
+      TARGET_HOST: 0.0.0.0
+      TARGET_PORT: 8083
+      EVIDENCE_COLLECTOR_URL: http://evidence-collector:8091
+      SCENARIO_ID: ssrf
+      MOCK_METADATA_URL: http://mock-metadata:8088
+    expose:
+      - "8083"
+    depends_on:
+      mock-metadata:
+        condition: service_healthy
+    networks:
+      - agentshield_simulation
+      - agentshield_egress
+    profiles: ["lab"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8083/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  mock-metadata:
+    build:
+      context: ./cyber-range/targets/mock-metadata
+    environment:
+      MOCK_HOST: 0.0.0.0
+      MOCK_PORT: 8088
+    expose:
+      - "8088"
+    networks:
+      - agentshield_simulation
+    profiles: ["lab"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 128m
+    restart: unless-stopped
+
+  malicious-download-target:
+    build:
+      context: ./cyber-range/targets/malicious-download
+    env_file:
+      - .env
+    environment:
+      TARGET_HOST: 0.0.0.0
+      TARGET_PORT: 8084
+      EVIDENCE_COLLECTOR_URL: http://evidence-collector:8091
+      SCENARIO_ID: malicious-download
+    expose:
+      - "8084"
+    networks:
+      - agentshield_simulation
+      - agentshield_egress
+    profiles: ["lab"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.1:8084/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  resource-exhaustion-target:
+    build:
+      context: ./cyber-range/targets/resource-exhaustion
+    env_file:
+      - .env
+    environment:
+      TARGET_HOST: 0.0.0.0
+      TARGET_PORT: 8085
+      EVIDENCE_COLLECTOR_URL: http://evidence-collector:8091
+      SCENARIO_ID: resource-exhaustion
+      MAX_PROCESSES: 100
+      MAX_MEMORY_MB: 256
+      MAX_CPU_PERCENT: 80
+      EXECUTION_TIMEOUT_SECONDS: 30
+    expose:
+      - "8085"
+    networks:
+      - agentshield_simulation
+      - agentshield_egress
+    profiles: ["lab"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 512m
+    cpus: "1.0"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8085/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  dns-rebinding-target:
+    build:
+      context: ./cyber-range/targets/dns-rebinding
+    env_file:
+      - .env
+    environment:
+      TARGET_HOST: 0.0.0.0
+      TARGET_PORT: 8086
+      EVIDENCE_COLLECTOR_URL: http://evidence-collector:8091
+      SCENARIO_ID: dns-rebinding
+      DNS_DOMAIN: rebind.lab.agentshield
+      SAFE_IP: 127.0.0.1
+      REBIND_IP: 10.0.0.1
+    expose:
+      - "8086"
+    networks:
+      - agentshield_simulation
+      - agentshield_egress
+    profiles: ["lab"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8086/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  data-exfiltration-sink:
+    build:
+      context: ./cyber-range/targets/data-exfiltration
+    env_file:
+      - .env
+    environment:
+      SINK_HOST: 0.0.0.0
+      SINK_PORT: 8087
+      EVIDENCE_COLLECTOR_URL: http://evidence-collector:8091
+      SCENARIO_ID: data-exfiltration
+    expose:
+      - "8087"
+    networks:
+      - agentshield_simulation
+      - agentshield_egress
+    profiles: ["lab"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8087/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # ============================================================
+  # OBSERVABILITY PROFILE — Optional monitoring
+  # ============================================================
+  prometheus:
+    image: prom/prometheus:v2.54.0
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+    volumes:
+      - ./cyber-range/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - agentshield_control
+    profiles: ["observability"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 512m
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_INSTALL_PLUGINS: ""
+    volumes:
+      - ./cyber-range/observability/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./cyber-range/observability/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./cyber-range/observability/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - agentshield_control
+    profiles: ["observability"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 512m
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:2.9.0
+    command: "-config.file=/etc/loki/local-config.yaml"
+    volumes:
+      - ./cyber-range/observability/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    ports:
+      - "127.0.0.1:3100:3100"
+    networks:
+      - agentshield_control
+    profiles: ["observability"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 512m
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:2.9.0
+    volumes:
+      - ./cyber-range/observability/promtail-config.yaml:/etc/promtail/config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    depends_on:
+      - loki
+    networks:
+      - agentshield_control
+    profiles: ["observability"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    restart: unless-stopped
+
 networks:
-  edge:
-  worker-net:
+  agentshield_control:
+    driver: bridge
+    internal: false
+  agentshield_simulation:
+    driver: bridge
     internal: true
-  egress-net:
+  agentshield_egress:
+    driver: bridge
+    internal: false
+  worker-net:
+    driver: bridge
+    internal: true
 
 volumes:
   postgres_data:
   redis_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:

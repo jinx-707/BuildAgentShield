@@ -3,11 +3,15 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app import __version__
+from app.api.ai_agent import router as ai_agent_router
+from app.api.attack_simulation import router as attack_simulation_router
 from app.api.audit import router as audit_router
 from app.api.browser import router as browser_router
+from app.api.cyber_range import router as cyber_range_router
 from app.api.enterprise import router as enterprise_router
 from app.api.health import router as health_router
 from app.clients.browser_worker import BrowserWorkerClient
@@ -71,6 +75,12 @@ def create_app(
         app.state.rate_limiter = resolved_rate_limiter
         app.state.rate_limit_enabled = resolved_settings.rate_limit_enabled
         app.state.rate_limit_backend = resolved_settings.rate_limit_backend
+
+        # Initialize PostgreSQL before constructing the database policy engine,
+        # which needs an initialised engine to resolve effective policies.
+        if resolved_settings.database_url:
+            init_db(resolved_settings)
+
         app.state.policy_engine = policy_engine or build_policy_engine(
             resolved_settings
         )
@@ -86,10 +96,6 @@ def create_app(
         app.state.search_provider = search_provider or build_search_provider(
             resolved_settings
         )
-
-        # Initialize PostgreSQL database when DATABASE_URL is configured.
-        if resolved_settings.database_url:
-            init_db(resolved_settings)
 
         # Audit store: durable PostgreSQL when the database is configured,
         # otherwise the bounded in-memory store for development.
@@ -156,6 +162,21 @@ def create_app(
         api_auth_token=resolved_settings.api_auth_token,
     )
     app.add_middleware(RequestContextMiddleware)
+    # Added last so it is the outermost middleware: browser preflight requests
+    # are answered before authentication and rate limiting run.
+    cors_origins = [
+        origin.strip()
+        for origin in resolved_settings.cors_origins.split(",")
+        if origin.strip()
+    ]
+    if cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=["*"],
+        )
 
     async def _rate_limited(request: Request, exc: RateLimitExceeded) -> JSONResponse:
         return rate_limit_response(exc)
@@ -171,6 +192,9 @@ def create_app(
     app.include_router(browser_router)
     app.include_router(audit_router)
     app.include_router(enterprise_router)
+    app.include_router(ai_agent_router)
+    app.include_router(attack_simulation_router)
+    app.include_router(cyber_range_router)
     return app
 
 

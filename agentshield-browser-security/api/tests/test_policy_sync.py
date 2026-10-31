@@ -32,6 +32,7 @@ from tests.conftest import make_settings
 PROD_BASE = dict(
     environment="production",
     api_auth_token="prod-token",
+    jwt_secret="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     allowed_domains="example.com",
     browser_worker_url="http://worker.test:8080",
     policy_backend="egress-policy",
@@ -197,6 +198,7 @@ def test_production_startup_fails_with_empty_allowed_domains_and_default_deny():
             _env_file=None,
             environment="production",
             api_auth_token="prod-token",
+            jwt_secret="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
             allowed_domains="",
             default_domain_policy="deny",
             browser_worker_url="http://worker.test:8080",

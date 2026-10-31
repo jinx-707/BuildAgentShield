@@ -120,7 +120,7 @@ class Role(Base, TimestampMixin):
     permissions = Column(JSONB, nullable=False, default=list)
     is_system = Column(Boolean, nullable=False, default=False)
 
-    __table_args__ = (Index("ix_roles_name", "name"),)
+    __table_args__ = ()
 
 
 class Permission(Base, TimestampMixin):
@@ -166,7 +166,6 @@ class Agent(Base, TimestampMixin):
 
     __table_args__ = (
         Index("ix_agents_org_status", "organization_id", "status"),
-        Index("ix_agents_agent_id", "agent_id"),
     )
 
 
@@ -384,12 +383,27 @@ class Deployment(Base, TimestampMixin):
     )
     name = Column(String(255), nullable=False)
     deployment_id = Column(String(255), nullable=False, unique=True, index=True)
-    status = Column(String(50), nullable=False, default="pending")
+    # Deployment profile: saas | hybrid | self_hosted
+    profile = Column(String(50), nullable=False, default="hybrid")
+    status = Column(String(50), nullable=False, default="pending_enrollment")
     control_plane_url = Column(Text, nullable=True)
-    enrollment_token = Column(String(255), nullable=True)
+    location_label = Column(String(255), nullable=True)
+    data_plane_version = Column(String(128), nullable=True)
+    # Enrollment: token hash stored (never plaintext), plus expiry.
+    enrollment_token_hash = Column(String(64), nullable=True)
+    enrollment_token_expires_at = Column(DateTime(timezone=True), nullable=True)
     enrolled_at = Column(DateTime(timezone=True), nullable=True)
+    # Deployment secret hash (HMAC key for signed policy packages).
+    # The raw secret is returned once at enrollment and never stored.
+    deployment_secret_hash = Column(String(64), nullable=True)
+    # Policy sync state
+    current_policy_version = Column(String(255), nullable=True)
+    current_policy_sequence = Column(Integer, nullable=False, default=0)
+    last_policy_sync_at = Column(DateTime(timezone=True), nullable=True)
+    # Connectivity
     last_heartbeat_at = Column(DateTime(timezone=True), nullable=True)
     is_connected = Column(Boolean, nullable=False, default=False)
+    disconnected_since = Column(DateTime(timezone=True), nullable=True)
 
     organization = relationship("Organization", back_populates="deployments")
 
@@ -405,4 +419,4 @@ class SystemConfig(Base, TimestampMixin):
     description = Column(Text, nullable=True)
     is_sensitive = Column(Boolean, nullable=False, default=False)
 
-    __table_args__ = (Index("ix_system_config_key", "key"),)
+    __table_args__ = ()

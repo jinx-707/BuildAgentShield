@@ -18,7 +18,10 @@ from models.download import Download  # noqa: E402, F401  (ensure table is regis
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers defaults to True and would silently disable
+    # every application logger created before the migration runs (the service
+    # runs migrations on startup), destroying runtime logging.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

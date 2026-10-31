@@ -95,6 +95,13 @@ ROLE_PERMISSIONS = {
         "incident:read",
         "deployment:read",
     },
+    # Agent SDK role — scoped to the org's own agent actions
+    "agent": {
+        "session:read",
+        "session:write",
+        "audit:read",
+        "agent:action",
+    },
 }
 
 

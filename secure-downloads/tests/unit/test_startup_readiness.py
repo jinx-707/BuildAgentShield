@@ -17,6 +17,7 @@ where the answer matters.
 """
 from __future__ import annotations
 
+import logging
 import stat
 from pathlib import Path
 
@@ -416,6 +417,34 @@ def test_startup_fails_when_database_is_unreachable(tmp_path):
             pass  # pragma: no cover
 
     assert exc_info.value.__class__ is not AssertionError
+
+
+def test_startup_migrations_do_not_disable_application_loggers(tmp_path):
+    """
+    Migrations run in-process at startup.
+
+    Alembic's fileConfig() defaults to disable_existing_loggers=True, which
+    silently disabled every application logger (api.app, api.middleware,
+    api.routes) after startup.  Startup must leave logging state intact.
+    """
+    with client_for(tmp_path) as client:
+        assert client.get("/health/live").status_code == 200
+
+    for name in ("api.app", "api.middleware", "api.routes"):
+        assert logging.getLogger(name).disabled is False
+
+
+def test_startup_does_not_replace_host_logging_configuration(tmp_path):
+    """Running migrations must not overwrite root handlers or level."""
+    root = logging.getLogger()
+    handlers_before = list(root.handlers)
+    level_before = root.level
+
+    with client_for(tmp_path) as client:
+        assert client.get("/health/live").status_code == 200
+
+    assert list(root.handlers) == handlers_before
+    assert root.level == level_before
 
 
 def test_storage_zones_are_created_at_startup(tmp_path):

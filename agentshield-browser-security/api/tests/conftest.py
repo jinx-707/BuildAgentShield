@@ -316,7 +316,11 @@ def make_settings(**overrides) -> Settings:
         "inspection_backend": "mock",
         "allowed_domains": "example.com",
         "dns_preflight_enabled": False,
+        "database_url": "",
     }
+    # Provide a valid JWT secret for production environment tests
+    if overrides.get("environment") == "production":
+        values.setdefault("jwt_secret", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
     values.update(overrides)
     return Settings(_env_file=None, **values)
 

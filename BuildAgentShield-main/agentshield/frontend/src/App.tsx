@@ -42,6 +42,7 @@ import {
   toneFor,
 } from "./components/ui"
 import Overview from "./pages/Overview"
+import BrowserSessions from "./pages/BrowserSessions"
 import {
   capabilities,
   exportFile,
@@ -49,7 +50,7 @@ import {
   initialApprovals,
   initialEvents,
   policies as policySeed,
-  scenarios,
+  scenarios as demoScenarios,
   simulate,
   type Agent,
   type Approval,
@@ -66,6 +67,7 @@ import {
   downloadAudit,
   getAgents as getAgentsApi,
   getApprovals as getApprovalsApi,
+  getAttackScenarios as getAttackScenariosApi,
   getAudit as getAuditApi,
   getOverviewStats,
   getPolicies as getPoliciesApi,
@@ -95,6 +97,7 @@ import {
 const navigation = [
   { title: "Overview", icon: LayoutDashboard },
   { title: "Agents", icon: Users },
+  { title: "Browser Sessions", icon: Globe },
   { title: "Capabilities & Permissions", icon: SlidersHorizontal },
   { title: "Policy Manager", icon: ShieldCheck },
   { title: "Approval Queue", icon: FileCheck2 },
@@ -102,7 +105,9 @@ const navigation = [
   { title: "Attack Simulator", icon: FlaskConical },
 ]
 const pageDescriptions: Record<string, string> = {
-  Agents: "Manage identities, access, and the lifecycle of your AI agents.",
+  Agents: "Manage identities, access, and the lifecycle of your browser agents.",
+  "Browser Sessions":
+    "Launch a governed browser, navigate destinations, and watch policy enforcement in real time.",
   "Capabilities & Permissions":
     "Define exactly what each agent can access and do.",
   "Policy Manager":
@@ -183,19 +188,21 @@ export default function App() {
     { id: "demo-2", label: "Unverified download" },
   ])
   const [approvalTab, setApprovalTab] = useState("Pending")
-  const [loggedIn, setLoggedIn] = useState(true)
-  const [loginEmail, setLoginEmail] = useState("admin@agentshield.demo")
-  const [loginPassword, setLoginPassword] = useState("")
+  const [loggedIn, setLoggedIn] = useState(false)
+  const [loginEmail, setLoginEmail] = useState("admin@agentshield.dev")
+  const [loginPassword, setLoginPassword] = useState("admin-change-me")
   const [loginError, setLoginError] = useState("")
   const [backendMode, setBackendMode] = useState(false)
   const [sessionUser, setSessionUser] = useState<SessionUser | null>(null)
   const [stats, setStats] = useState<OverviewStats | null>(null)
   const [auditVerification, setAuditVerification] =
     useState<AuditVerification | null>(null)
+  const [attackScenarios, setAttackScenarios] = useState<Array<{ id: string; name: string; description: string; category: string }>>([])
   const pending = approvals.filter((a) => a.status === "Pending").length
   const selectedAgentRecord = agents.find(
     (agent) => agent.name === selectedAgent,
   )
+  const activeScenarios = backendMode ? attackScenarios : demoScenarios
   function notify(message: string) {
     setToast(message)
     clearTimeout(toastTimer.current)
@@ -228,7 +235,7 @@ export default function App() {
     setResults({})
   }
   async function loadBackendData(user?: SessionUser | null) {
-    const [agentList, approvalList, auditResult, policyList, quarantineList, workspace] =
+    const [agentList, approvalList, auditResult, policyList, quarantineList, workspace, scenarios] =
       await Promise.all([
         getAgentsApi(),
         getApprovalsApi(),
@@ -236,6 +243,7 @@ export default function App() {
         getPoliciesApi(),
         getQuarantineApi(),
         getWorkspaceApi(),
+        getAttackScenariosApi(),
       ])
     setAgents(agentList)
     if (!agentList.some((agent) => agent.name === selectedAgent)) {
@@ -250,6 +258,7 @@ export default function App() {
         label: item.preview || item.reason || item.tool,
       })),
     )
+    setAttackScenarios(scenarios)
     setWorkspaceName(workspace.name)
     setWorkspaceDraft(workspace.name)
     if (user) setSessionUser(user)
@@ -421,7 +430,7 @@ export default function App() {
     }
     for (const id of ids) {
       await new Promise((resolve) => setTimeout(resolve, 230))
-      const scenario = scenarios.find((s) => s.id === id)!
+      const scenario = activeScenarios.find((s) => s.id === id)!
       const result = simulate(scenario)
       setResults((old) => ({ ...old, [id]: result }))
       addAudit(
@@ -663,27 +672,8 @@ export default function App() {
       notify("Connected to the AgentShield backend.")
       return
     } catch (error) {
-      const isDemoCredentials =
-        loginEmail === "admin@agentshield.demo" &&
-        loginPassword === "demo-password"
-      if (!isDemoCredentials) {
-        setLoginError(errorMessage(error))
-        return
-      }
-      try {
-        const result = await loginDemoBackend()
-        await loadBackendData(result.user)
-        setLoggedIn(true)
-        notify("Connected to the AgentShield backend.")
-        return
-      } catch {
-        clearSession()
-        setBackendMode(false)
-        setSessionUser(null)
-        resetDemoState()
-        setLoggedIn(true)
-        notify("Backend unavailable. Safe demo mode is active.")
-      }
+      clearSession()
+      setLoginError(errorMessage(error))
     }
   }
   async function signOut() {
@@ -709,7 +699,7 @@ export default function App() {
           <div className="brand-mark">
             <Shield size={26} />
           </div>
-          <Badge tone="violet">DEMO WORKSPACE</Badge>
+          <Badge tone="violet">SECURE WORKSPACE</Badge>
           <h1>Welcome to AgentShield</h1>
           <p>A safer boundary for every agent.</p>
           <form
@@ -738,16 +728,16 @@ export default function App() {
             </label>
             {loginError && <p className="text-red">{loginError}</p>}
             <Button type="submit" variant="primary">
-              Enter demo workspace
+              Sign in
               <ArrowRight size={16} />
             </Button>
           </form>
           <div className="demo-login-note">
-            Demo fallback available when the backend is offline
+            Development workspace seeded by scripts/seed_dev.py
             <br />
-            <code>admin@agentshield.demo</code>
+            <code>admin@agentshield.dev</code>
             <br />
-            <code>demo-password</code>
+            <code>admin-change-me</code>
           </div>
         </div>
       </div>
@@ -938,7 +928,7 @@ export default function App() {
                     <Button
                       variant="primary"
                       disabled={running}
-                      onClick={() => runSimulation(scenarios.map((s) => s.id))}
+                      onClick={() => runSimulation(activeScenarios.map((s) => s.id))}
                     >
                       <Zap size={16} />
                       {running ? "Running scenarios…" : "Run all scenarios"}
@@ -1082,6 +1072,14 @@ export default function App() {
                     </div>
                   </Panel>
                 </>
+              )}
+              {page === "Browser Sessions" && (
+                <BrowserSessions
+                  agents={agents}
+                  events={events}
+                  notify={notify}
+                  onRefreshAudit={refreshAudit}
+                />
               )}
               {page === "Capabilities & Permissions" && (
                 <>
@@ -1460,17 +1458,18 @@ export default function App() {
                   <div className="summary-strip">
                     <div>
                       <FlaskConical size={17} />
-                      <strong>10</strong>Attack scenarios
+                      <strong>{activeScenarios.length}</strong>Attack scenarios
                     </div>
                     <div>
                       <Check size={17} />
                       <strong>
                         {
                           Object.entries(results).filter(
-                            ([id, r]) =>
-                              r.decision ===
-                                scenarios.find((s) => s.id === id)?.expected &&
-                              !r.executed,
+                            ([id, r]) => {
+                              const scenario = activeScenarios.find((s) => s.id === id)
+                              const expected = backendMode ? undefined : (scenario as typeof demoScenarios[number] | undefined)?.expected
+                              return expected !== undefined && r.decision === expected && !r.executed
+                            },
                           ).length
                         }
                       </strong>
@@ -1500,54 +1499,61 @@ export default function App() {
                     )}
                   </div>
                   <div className="scenario-grid">
-                    {scenarios.map((s, i) => (
-                      <div className="panel scenario-card" key={s.id}>
-                        <div className="scenario-top">
-                          <span className="scenario-number">
-                            {String(i + 1).padStart(2, "0")}
-                          </span>
-                          <Badge
-                            tone={
-                              results[s.id]
-                                ? results[s.id].decision === s.expected
-                                  ? "green"
-                                  : "red"
-                                : "neutral"
-                            }
-                          >
-                            {results[s.id]
-                              ? results[s.id].decision === s.expected
-                                ? "Passed"
-                                : "Failed"
-                              : s.category}
-                          </Badge>
-                        </div>
-                        <h3>{s.name}</h3>
-                        <p>{s.description}</p>
-                        <div className="scenario-expected">
-                          <span>Expected outcome</span>
-                          <Badge tone={toneFor(s.expected)}>{s.expected}</Badge>
-                        </div>
-                        {results[s.id] && (
-                          <div className="scenario-result">
-                            <ShieldCheck size={14} />
-                            <span>
-                              {results[s.id].reason}
-                              <br />
-                              <strong>Executed: no</strong>
+                    {activeScenarios.map((s, i) => {
+                      const isDemo = !backendMode
+                      const expected = isDemo ? (s as typeof demoScenarios[number]).expected : undefined
+                      const category = isDemo ? (s as typeof demoScenarios[number]).category : s.category
+                      return (
+                        <div className="panel scenario-card" key={s.id}>
+                          <div className="scenario-top">
+                            <span className="scenario-number">
+                              {String(i + 1).padStart(2, "0")}
                             </span>
+                            <Badge
+                              tone={
+                                results[s.id]
+                                  ? results[s.id].decision === expected
+                                    ? "green"
+                                    : "red"
+                                  : "neutral"
+                              }
+                            >
+                              {results[s.id]
+                                ? results[s.id].decision === expected
+                                  ? "Passed"
+                                  : "Failed"
+                                : category}
+                            </Badge>
                           </div>
-                        )}
-                        <Button
-                          disabled={running}
-                          onClick={() => runSimulation([s.id])}
-                        >
-                          <FlaskConical size={14} />
-                          {results[s.id] ? "Run again" : "Run scenario"}
-                          <ArrowUpRight size={13} />
-                        </Button>
-                      </div>
-                    ))}
+                          <h3>{s.name}</h3>
+                          <p>{s.description}</p>
+                          {isDemo && expected && (
+                            <div className="scenario-expected">
+                              <span>Expected outcome</span>
+                              <Badge tone={toneFor(expected)}>{expected}</Badge>
+                            </div>
+                          )}
+                          {results[s.id] && (
+                            <div className="scenario-result">
+                              <ShieldCheck size={14} />
+                              <span>
+                                {results[s.id].reason}
+                                <br />
+                                <strong>Executed: no</strong>
+                              </span>
+                            </div>
+                          )}
+                          <Button
+                            disabled={running}
+                            onClick={() => runSimulation([s.id])}
+                          >
+                            <FlaskConical size={14} />
+                            {results[s.id] ? "Run again" : "Run scenario"}
+                            <ArrowUpRight size={13} />
+                          </Button>
+                        </div>
+                      )
+                    })}
                   </div>
                 </>
               )}
@@ -2361,11 +2367,24 @@ export default function App() {
               onSubmit={async (e) => {
                 e.preventDefault()
                 const form = new FormData(e.currentTarget)
+                const splitDomains = (value: FormDataEntryValue | null) =>
+                  String(value || "")
+                    .split(/[,\s]+/)
+                    .map((item) => item.trim())
+                    .filter(Boolean)
                 const draft = {
                   name: String(form.get("name")),
                   description: String(form.get("description")),
-                  category: "Custom policy",
-                  rule: String(form.get("rule")),
+                  category: "Browser egress",
+                  allowed_domains: splitDomains(form.get("allowed_domains")),
+                  blocked_domains: splitDomains(form.get("blocked_domains")),
+                  default_domain_policy: String(
+                    form.get("default_domain_policy") || "deny",
+                  ) as "allow" | "deny",
+                  allowed_ports: splitDomains(form.get("allowed_ports")),
+                  allow_private_networks:
+                    form.get("allow_private_networks") === "on",
+                  is_default: false,
                 }
                 if (backendMode) {
                   try {
@@ -2373,7 +2392,7 @@ export default function App() {
                     setPolicies((old) => [...old, created])
                     setModal(null)
                     notify(
-                      "Draft policy created. Custom Rego execution is not enabled.",
+                      "Policy created and enforced by the database policy engine.",
                     )
                   } catch (error) {
                     notify(errorMessage(error))
@@ -2385,13 +2404,14 @@ export default function App() {
                   {
                     id: `pol_${crypto.randomUUID().slice(0, 6)}`,
                     ...draft,
+                    rule: `default: ${draft.default_domain_policy}\nallowed: ${draft.allowed_domains.join(", ") || "(none)"}\nblocked: ${draft.blocked_domains.join(", ") || "(none)"}`,
                     version: 1,
-                    active: false,
+                    active: true,
                   },
                 ])
                 setModal(null)
                 notify(
-                  "Draft demo policy created. It does not affect the evaluator.",
+                  "Demo policy created. Connect the backend to enforce it.",
                 )
               }}
             >
@@ -2412,25 +2432,53 @@ export default function App() {
                 />
               </label>
               <label className="form-label">
-                Rule definition
-                <textarea
-                  name="rule"
-                  required
-                  rows={4}
-                  placeholder="DENY when ..."
+                Allowed domains
+                <input
+                  name="allowed_domains"
+                  placeholder="example.com, docs.example.org"
+                  defaultValue="example.com"
                 />
+              </label>
+              <label className="form-label">
+                Blocked domains
+                <input
+                  name="blocked_domains"
+                  placeholder="blocked.example, metadata.example"
+                  required
+                />
+              </label>
+              <div className="form-row">
+                <label className="form-label">
+                  Default domain policy
+                  <select name="default_domain_policy" defaultValue="deny">
+                    <option value="deny">deny</option>
+                    <option value="allow">allow</option>
+                  </select>
+                </label>
+                <label className="form-label">
+                  Allowed ports
+                  <input
+                    name="allowed_ports"
+                    defaultValue="80,443"
+                    placeholder="80,443"
+                  />
+                </label>
+              </div>
+              <label className="form-check">
+                <input type="checkbox" name="allow_private_networks" />
+                Allow private network destinations
               </label>
               <div className="notice">
                 <CircleHelp size={16} />
                 <span>
                   {backendMode
-                    ? "Custom rules are stored as backend drafts. The connected server does not execute custom Rego."
-                    : "Custom rules are saved as demo drafts. They are not executable Rego policies."}
+                    ? "This policy is stored in PostgreSQL and evaluated by the database policy engine before any browser navigation."
+                    : "This demo policy is local only. Connect the backend to enforce it in the browser worker."}
                 </span>
               </div>
               <div className="modal-actions">
                 <Button type="submit" variant="primary">
-                  Create draft
+                  Create policy
                 </Button>
               </div>
             </form>
@@ -2560,8 +2608,8 @@ export default function App() {
                   <h3>Safely simulated</h3>
                   <p>
                     {backendMode
-                      ? "The ten scenarios execute through the gateway with mock adapters. No host files, secrets, or external services are accessed."
-                      : "The ten attack scenarios use local deterministic rules. No host files, secrets, or external services are accessed."}
+                      ? `${activeScenarios.length} scenarios execute through the gateway with mock adapters. No host files, secrets, or external services are accessed.`
+                      : `${activeScenarios.length} attack scenarios use local deterministic rules. No host files, secrets, or external services are accessed.`}
                   </p>
                 </div>
                 <div>

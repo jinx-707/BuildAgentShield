@@ -1,6 +1,8 @@
 """Database base and session management for AgentShield enterprise platform."""
 
-from sqlalchemy import create_engine
+from datetime import datetime, timezone
+
+from sqlalchemy import Column, DateTime, create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 
@@ -10,6 +12,26 @@ Base = declarative_base()
 
 _engine = None
 _SessionLocal = None
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class TimestampMixin:
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default="now()",
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default="now()",
+    )
 
 
 def init_db(settings: Settings) -> None:

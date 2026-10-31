@@ -1,1 +1,1 @@
-export { default } from "../agentshield/frontend/src/App"
+export { default } from "../BuildAgentShield-main/agentshield/frontend/src/App"

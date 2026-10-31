@@ -67,6 +67,7 @@ def test_production_startup_succeeds_with_api_auth_token():
         _env_file=None,
         environment="production",
         api_auth_token="prod-secret",
+        jwt_secret="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         browser_worker_url="http://worker.test:8080",
         allowed_domains="example.com",
         policy_backend="egress-policy",
