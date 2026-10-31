@@ -501,8 +501,12 @@ class Gateway:
                     return response
 
             try:
-                await adapter.precheck(request, request.tool_name, arguments)
-                adapter_result = await adapter.execute(request, request.tool_name, arguments)
+                await adapter.precheck(
+                    request, request.tool_name, arguments, auth=auth
+                )
+                adapter_result = await adapter.execute(
+                    request, request.tool_name, arguments, auth=auth
+                )
             except AdapterError as exc:
                 event = await self.audit.append(
                     session,

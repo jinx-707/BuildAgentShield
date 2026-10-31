@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -65,7 +66,7 @@ class IntegrationManager:
             self.p1_detail = "P1 security engine is explicitly unavailable"
             return
         try:
-            engine = _load_plugin(value)
+            engine = _load_plugin(value, self.settings)
             required = (
                 "inspect_input",
                 "inspect_output",
@@ -98,7 +99,7 @@ class IntegrationManager:
             self.p2_detail = "P2 adapters are explicitly unavailable"
             return
         try:
-            self.offline = _load_adapter_plugin(value, self.p2_status)
+            self.offline = _load_adapter_plugin(value, self.p2_status, self.settings)
             self.p2_status = "REAL"
             self.p2_detail = value
         except Exception as exc:
@@ -124,7 +125,7 @@ class IntegrationManager:
             self.p3_detail = "P3 adapters are explicitly unavailable"
             return
         try:
-            self.online = _load_adapter_plugin(value, self.p3_status)
+            self.online = _load_adapter_plugin(value, self.p3_status, self.settings)
             self.p3_status = "REAL"
             self.p3_detail = value
         except Exception as exc:
@@ -167,17 +168,31 @@ class IntegrationManager:
         return None
 
 
-def _load_plugin(path: str) -> Any:
+def _load_plugin(path: str, settings: Settings | None = None) -> Any:
     if ":" not in path:
         raise ValueError("plugin path must be module:factory")
     module_name, factory_name = path.split(":", 1)
     module = importlib.import_module(module_name)
     factory = getattr(module, factory_name)
-    return factory() if callable(factory) else factory
+    if not callable(factory):
+        return factory
+    if settings is not None:
+        try:
+            parameters = inspect.signature(factory).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        if "settings" in parameters or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        ):
+            return factory(settings=settings)
+    return factory()
 
 
-def _load_adapter_plugin(path: str, status: str) -> AdapterRegistry:
-    loaded = _load_plugin(path)
+def _load_adapter_plugin(
+    path: str, status: str, settings: Settings | None = None
+) -> AdapterRegistry:
+    loaded = _load_plugin(path, settings)
     registry = AdapterRegistry()
     if isinstance(loaded, AdapterRegistry):
         return loaded

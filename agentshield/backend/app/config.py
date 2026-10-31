@@ -31,6 +31,16 @@ class Settings(BaseSettings):
     p1_engine: str = "mock"
     p2_adapters: str = "mock"
     p3_adapters: str = "mock"
+    p1_module_path: str | None = None
+    p2_module_path: str | None = None
+    p2_workspace_root: str = "workspace"
+    p2_quarantine_dir: str | None = None
+    p2_malware_scan_enabled: bool = True
+    p2_clamav_fail_closed: bool = True
+    p2_terminal_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    p2_max_file_size_bytes: int = Field(default=10 * 1024 * 1024, ge=1)
+    p2_max_read_bytes: int = Field(default=1_000_000, ge=1)
+    p2_max_document_text: int = Field(default=100_000, ge=1)
     admin_email: str = "admin@agentshield.local"
     admin_password: str = "admin-change-me"
     admin_tenant_slug: str = "acme"

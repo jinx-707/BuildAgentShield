@@ -3,7 +3,7 @@ from __future__ import annotations
 import secrets
 from typing import Any, Protocol
 
-from .contracts import AdapterResult, ToolRequest
+from .contracts import AdapterResult, AuthContext, ToolRequest
 
 
 class AdapterError(RuntimeError):
@@ -18,11 +18,19 @@ class Adapter(Protocol):
     async def healthcheck(self) -> bool: ...
 
     async def precheck(
-        self, request: ToolRequest, tool_name: str, arguments: dict[str, Any]
+        self,
+        request: ToolRequest,
+        tool_name: str,
+        arguments: dict[str, Any],
+        auth: AuthContext | None = None,
     ) -> None: ...
 
     async def execute(
-        self, request: ToolRequest, tool_name: str, arguments: dict[str, Any]
+        self,
+        request: ToolRequest,
+        tool_name: str,
+        arguments: dict[str, Any],
+        auth: AuthContext | None = None,
     ) -> AdapterResult: ...
 
 
@@ -42,13 +50,21 @@ class MockOfflineAdapter:
         return True
 
     async def precheck(
-        self, request: ToolRequest, tool_name: str, arguments: dict[str, Any]
+        self,
+        request: ToolRequest,
+        tool_name: str,
+        arguments: dict[str, Any],
+        auth: AuthContext | None = None,
     ) -> None:
         if tool_name not in self.tool_names:
             raise AdapterError("offline adapter cannot handle this tool")
 
     async def execute(
-        self, request: ToolRequest, tool_name: str, arguments: dict[str, Any]
+        self,
+        request: ToolRequest,
+        tool_name: str,
+        arguments: dict[str, Any],
+        auth: AuthContext | None = None,
     ) -> AdapterResult:
         if tool_name == "read_document":
             return AdapterResult(
@@ -123,13 +139,21 @@ class MockOnlineAdapter:
         return True
 
     async def precheck(
-        self, request: ToolRequest, tool_name: str, arguments: dict[str, Any]
+        self,
+        request: ToolRequest,
+        tool_name: str,
+        arguments: dict[str, Any],
+        auth: AuthContext | None = None,
     ) -> None:
         if tool_name not in self.tool_names:
             raise AdapterError("online adapter cannot handle this tool")
 
     async def execute(
-        self, request: ToolRequest, tool_name: str, arguments: dict[str, Any]
+        self,
+        request: ToolRequest,
+        tool_name: str,
+        arguments: dict[str, Any],
+        auth: AuthContext | None = None,
     ) -> AdapterResult:
         token = secrets.token_hex(8)
         if tool_name == "browse_url":
@@ -224,12 +248,20 @@ class UnavailableAdapter:
         return False
 
     async def precheck(
-        self, request: ToolRequest, tool_name: str, arguments: dict[str, Any]
+        self,
+        request: ToolRequest,
+        tool_name: str,
+        arguments: dict[str, Any],
+        auth: AuthContext | None = None,
     ) -> None:
         raise AdapterError(f"adapter {self.name} unavailable")
 
     async def execute(
-        self, request: ToolRequest, tool_name: str, arguments: dict[str, Any]
+        self,
+        request: ToolRequest,
+        tool_name: str,
+        arguments: dict[str, Any],
+        auth: AuthContext | None = None,
     ) -> AdapterResult:
         raise AdapterError(f"adapter {self.name} unavailable")
 
