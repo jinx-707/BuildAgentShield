@@ -1,0 +1,32 @@
+# AgentShield Offline — Protected System Paths Configuration
+#
+# These are ADDITIONAL paths beyond the built-in defaults.
+# Built-in defaults already include /etc, /root, /proc, /sys, /dev, /var, etc.
+# (See app/capabilities/offline/system_files/protected_paths.py)
+
+# Additional directories to protect beyond built-in defaults
+extra_protected_dirs:
+  - "/home"
+  - "/opt"
+  - "/srv"
+  - "/snap"
+
+# Additional filename patterns to treat as sensitive
+# Use single-quoted strings to avoid YAML escape issues with backslashes
+extra_sensitive_patterns:
+  - '\.vault_token$'
+  - '\.netrc$'
+  - 'kubeconfig$'
+  - '\.terraform$'
+  - 'terraform\.tfvars$'
+  - '\.npmrc$'
+  - '\.pypirc$'
+
+# Agent-specific exclusions
+# These allow specific agents to access normally-protected paths.
+# Use with extreme caution.
+agent_exclusions: []
+  # Example (do not enable without proper authorisation):
+  # - agent_id: "infrastructure-agent"
+  #   allowed_paths:
+  #     - "/etc/app-config"
