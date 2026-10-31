@@ -47,11 +47,17 @@ class BrowserSecurityOrchestrator:
         *,
         request_id: str,
         agent_id: str | None = None,
+        organization_id: str | None = None,
     ) -> BrowserNavigateResponse:
         validated_url = await self._network_preflight.validate(str(request.url))
 
         decision = await self._policy_engine.authorize(
-            PolicyRequest(request_id=request_id, url=validated_url.url)
+            PolicyRequest(
+                request_id=request_id,
+                url=validated_url.url,
+                organization_id=organization_id,
+                agent_id=agent_id,
+            )
         )
         if not decision.allowed:
             raise PolicyDeniedError(

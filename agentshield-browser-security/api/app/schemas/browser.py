@@ -40,6 +40,8 @@ class WorkerNavigateResponse(BaseModel):
 class PolicyRequest(BaseModel):
     request_id: str
     url: str
+    organization_id: str | None = None
+    agent_id: str | None = None
 
 
 class PolicyDecision(BaseModel):

@@ -7,8 +7,10 @@ persistence is introduced in Prompt 2 (PostgreSQL + migrations).
 
 from threading import Lock
 from typing import Literal
+import asyncio
 
 from app.schemas.audit import AuditEvent, AuditEventList
+from app.services.event_broadcaster import broadcaster
 
 AuditEventType = Literal[
     "session.create",
@@ -46,6 +48,11 @@ class AuditStore:
         reason: str | None = None,
         request_id: str | None = None,
         metadata: dict | None = None,
+        organization_id: str | None = None,
+        agent_id: str | None = None,
+        event_category: str | None = None,
+        ip_address: str | None = None,
+        severity: str = "info",
     ) -> AuditEvent:
         event = AuditEvent(
             type=type,
@@ -61,6 +68,26 @@ class AuditStore:
             self._events.append(event)
             if len(self._events) > self._max_events:
                 self._events = self._events[-self._max_events :]
+        try:
+            asyncio.create_task(
+                broadcaster.publish(
+                    {
+                        "id": event.event_id,
+                        "organization_id": None,
+                        "event_type": event.type,
+                        "actor": event.actor,
+                        "session_id": event.session_id,
+                        "target": event.target,
+                        "decision": event.decision,
+                        "reason": event.reason,
+                        "request_id": event.request_id,
+                        "timestamp": event.timestamp.isoformat(),
+                        "metadata": event.metadata,
+                    }
+                )
+            )
+        except RuntimeError:
+            pass
         return event
 
     def list(

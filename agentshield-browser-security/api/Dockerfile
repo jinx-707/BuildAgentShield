@@ -12,6 +12,8 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+COPY alembic.ini ./alembic.ini
+COPY alembic ./alembic
 
 USER app
 
@@ -24,4 +26,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 # resolution (RATE_LIMIT_TRUSTED_PROXIES). Uvicorn's built-in proxy-header
 # handling trusts 127.0.0.1 by default and would rewrite request.client.host
 # from a caller-supplied X-Forwarded-For header, bypassing that control.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]
+CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-proxy-headers"]

@@ -8,10 +8,12 @@ from fastapi.responses import JSONResponse
 from app import __version__
 from app.api.audit import router as audit_router
 from app.api.browser import router as browser_router
+from app.api.enterprise import router as enterprise_router
 from app.api.health import router as health_router
 from app.clients.browser_worker import BrowserWorkerClient
 from app.clients.search_provider import SearchProvider, build_search_provider
 from app.config import Settings, get_settings
+from app.db.base import init_db
 from app.factories import (
     build_content_inspector,
     build_network_preflight,
@@ -38,6 +40,8 @@ from app.security.rate_limit import (
 )
 from app.security.trusted_proxy import parse_trusted_proxies
 from app.services.audit import AuditStore
+from app.services.event_broadcaster import broadcaster
+from app.services.persistent_audit import PersistentAuditStore
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +86,22 @@ def create_app(
         app.state.search_provider = search_provider or build_search_provider(
             resolved_settings
         )
-        app.state.audit_store = AuditStore()
+
+        # Initialize PostgreSQL database when DATABASE_URL is configured.
+        if resolved_settings.database_url:
+            init_db(resolved_settings)
+
+        # Audit store: durable PostgreSQL when the database is configured,
+        # otherwise the bounded in-memory store for development.
+        if resolved_settings.database_url:
+            try:
+                app.state.audit_store = PersistentAuditStore()
+            except RuntimeError:
+                app.state.audit_store = AuditStore()
+        else:
+            app.state.audit_store = AuditStore()
+        app.state.broadcaster = broadcaster
+
         logger.info(
             "application_started",
             extra={
@@ -151,6 +170,7 @@ def create_app(
     app.include_router(health_router)
     app.include_router(browser_router)
     app.include_router(audit_router)
+    app.include_router(enterprise_router)
     return app
 
 

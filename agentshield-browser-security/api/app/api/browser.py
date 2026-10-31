@@ -1,6 +1,7 @@
 import logging
+from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Path, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
 
 from app.clients.browser_worker import (
     BrowserWorkerPolicyError,
@@ -16,6 +17,12 @@ from app.clients.search_provider import (
     SearchProviderResponseError,
     SearchProviderTimeout,
     SearchProviderUnavailable,
+)
+from app.db.models import Agent
+from app.enterprise.deps import (
+    get_current_principal_optional,
+    get_db,
+    Principal,
 )
 from app.middleware import AGENT_ID_HEADER, enforce_category_rate_limit
 from app.schemas.action import ActionResponse, BrowserActionRequest
@@ -35,7 +42,6 @@ from app.services.extract_service import ExtractService
 from app.services.identity import (
     InvalidAgentIdError,
     parse_agent_id,
-    parse_optional_agent_id,
 )
 from app.services.orchestrator import (
     BrowserSecurityOrchestrator,
@@ -45,29 +51,82 @@ from app.services.orchestrator import (
 from app.services.screenshot_service import ScreenshotService
 from app.services.search_orchestrator import SearchOrchestrator
 from app.services.session_service import SessionService
+from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/v1/browser", tags=["browser"])
 logger = logging.getLogger(__name__)
 
 
-def _required_agent_id(request: Request) -> str:
+def _resolve_agent_id(
+    request: Request,
+    db: Session | None,
+    principal: Principal | None = None,
+    *,
+    required: bool = False,
+) -> str | None:
+    """Resolve the X-Agent-ID agent and enforce organization membership.
+
+    Returns the validated agent_id string, or None when no X-Agent-ID header is
+    present and no enterprise principal requires one.
+
+    When an enterprise principal is present, the agent must exist in the
+    database and belong to the principal's organization (tenant isolation). When
+    no principal is present (legacy API_AUTH_TOKEN mode), the raw X-Agent-ID
+    value is used directly without database validation, preserving existing
+    browser API behavior.
+
+    When ``required`` is true (session/action/screenshot/extract endpoints), a
+    missing X-Agent-ID is rejected with 400. Navigation allows it to be absent.
+    """
+    raw_agent_id = request.headers.get(AGENT_ID_HEADER)
+    if not raw_agent_id:
+        if principal is not None:
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "AGENT_ID_REQUIRED", "message": "X-Agent-ID is required"},
+            )
+        if required:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "INVALID_AGENT_ID",
+                    "message": "agent id is required for session operations",
+                },
+            )
+        return None
     try:
-        return parse_agent_id(request.headers.get(AGENT_ID_HEADER))
+        agent_id = parse_agent_id(raw_agent_id)
     except InvalidAgentIdError as exc:
         raise HTTPException(
             status_code=exc.status_code,
             detail={"code": exc.code, "message": str(exc)},
         ) from exc
 
+    # Legacy mode (no principal): accept the caller-supplied agent id directly.
+    if principal is None or db is None:
+        return agent_id
 
-def _optional_agent_id(request: Request) -> str | None:
-    try:
-        return parse_optional_agent_id(request.headers.get(AGENT_ID_HEADER))
-    except InvalidAgentIdError as exc:
+    # Enterprise mode: validate the agent exists and belongs to the org.
+    agent = db.query(Agent).filter(Agent.agent_id == agent_id).first()
+    if not agent:
         raise HTTPException(
-            status_code=exc.status_code,
-            detail={"code": exc.code, "message": str(exc)},
-        ) from exc
+            status_code=404,
+            detail={"code": "AGENT_NOT_FOUND", "message": "agent not found"},
+        )
+    if str(agent.organization_id) != principal.organization_id:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "CROSS_TENANT_ACCESS",
+                "message": "agent does not belong to your organization",
+            },
+        )
+    if agent.status != "active":
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "AGENT_INACTIVE", "message": "agent is not active"},
+        )
+    return agent.agent_id
 
 
 def _raise_worker_policy_error(exc: BrowserWorkerPolicyError) -> None:
@@ -120,8 +179,12 @@ def _raise_worker_failure(exc: Exception) -> None:
 
 @router.post("/navigate", response_model=BrowserNavigateResponse)
 async def navigate(
-    payload: BrowserNavigateRequest, request: Request
+    payload: BrowserNavigateRequest,
+    request: Request,
+    db: Optional[Session] = Depends(get_db),
+    principal: Principal | None = Depends(get_current_principal_optional),
 ) -> BrowserNavigateResponse:
+    agent_id = _resolve_agent_id(request, db, principal)
     orchestrator = BrowserSecurityOrchestrator(
         policy_engine=request.app.state.policy_engine,
         content_inspector=request.app.state.content_inspector,
@@ -129,14 +192,16 @@ async def navigate(
         network_preflight=request.app.state.network_preflight,
     )
     request_id = request.state.request_id
-    agent_id = _optional_agent_id(request)
     await enforce_category_rate_limit(
         request, "navigation", session_id=payload.session_id
     )
 
     try:
         result = await orchestrator.navigate(
-            payload, request_id=request_id, agent_id=agent_id
+            payload,
+            request_id=request_id,
+            agent_id=agent_id,
+            organization_id=principal.organization_id if principal else None,
         )
         audit_store = request.app.state.audit_store
         audit_store.add(
@@ -146,6 +211,8 @@ async def navigate(
             decision="allow",
             reason="navigation permitted by policy",
             request_id=request_id,
+            organization_id=principal.organization_id if principal else None,
+            agent_id=agent_id,
         )
         return result
     except SecurityViolation as exc:
@@ -161,6 +228,8 @@ async def navigate(
             decision="deny",
             reason=exc.message,
             request_id=request_id,
+            organization_id=principal.organization_id if principal else None,
+            agent_id=agent_id,
         )
         raise HTTPException(
             status_code=exc.http_status,
@@ -179,6 +248,8 @@ async def navigate(
             decision="deny",
             reason=exc.reason,
             request_id=request_id,
+            organization_id=principal.organization_id if principal else None,
+            agent_id=agent_id,
         )
         raise HTTPException(
             status_code=403,
@@ -201,6 +272,8 @@ async def navigate(
             decision="deny",
             reason="redirect destination blocked by policy",
             request_id=request_id,
+            organization_id=principal.organization_id if principal else None,
+            agent_id=agent_id,
         )
         raise HTTPException(
             status_code=403,
@@ -222,6 +295,8 @@ async def navigate(
             decision="deny",
             reason=exc.message,
             request_id=request_id,
+            organization_id=principal.organization_id if principal else None,
+            agent_id=agent_id,
         )
         _raise_worker_policy_error(exc)
     except (BrowserWorkerTimeout, BrowserWorkerUnavailable, BrowserWorkerResponseError) as exc:
@@ -230,9 +305,12 @@ async def navigate(
 
 @router.post("/session", response_model=SessionStatus, status_code=201)
 async def create_session(
-    request: Request, payload: SessionCreateRequest | None = None
+    request: Request,
+    payload: SessionCreateRequest | None = None,
+    db: Optional[Session] = Depends(get_db),
+    principal: Principal | None = Depends(get_current_principal_optional),
 ) -> SessionStatus:
-    agent_id = _required_agent_id(request)
+    agent_id = _resolve_agent_id(request, db, principal, required=True)
     await enforce_category_rate_limit(request, "session_create")
     service = SessionService(request.app.state.browser_client)
     try:
@@ -249,6 +327,8 @@ async def create_session(
             decision="allow",
             reason="session created",
             request_id=request.state.request_id,
+            organization_id=principal.organization_id if principal else None,
+            agent_id=agent_id,
         )
         return result
     except BrowserWorkerPolicyError as exc:
@@ -265,8 +345,10 @@ async def create_session(
 async def get_session(
     request: Request,
     session_id: str = Path(pattern=SESSION_ID_PATTERN),
+    db: Optional[Session] = Depends(get_db),
+    principal: Principal | None = Depends(get_current_principal_optional),
 ) -> SessionStatus:
-    agent_id = _required_agent_id(request)
+    agent_id = _resolve_agent_id(request, db, principal, required=True)
     service = SessionService(request.app.state.browser_client)
     try:
         result = await service.get(
@@ -282,6 +364,8 @@ async def get_session(
             decision="allow",
             reason="session read",
             request_id=request.state.request_id,
+            organization_id=principal.organization_id if principal else None,
+            agent_id=agent_id,
         )
         return result
     except BrowserWorkerPolicyError as exc:
@@ -294,8 +378,10 @@ async def get_session(
 async def close_session(
     request: Request,
     session_id: str = Path(pattern=SESSION_ID_PATTERN),
+    db: Optional[Session] = Depends(get_db),
+    principal: Principal | None = Depends(get_current_principal_optional),
 ) -> SessionCloseResponse:
-    agent_id = _required_agent_id(request)
+    agent_id = _resolve_agent_id(request, db, principal, required=True)
     service = SessionService(request.app.state.browser_client)
     try:
         result = await service.close(
@@ -311,6 +397,8 @@ async def close_session(
             decision="allow",
             reason="session closed",
             request_id=request.state.request_id,
+            organization_id=principal.organization_id if principal else None,
+            agent_id=agent_id,
         )
         return result
     except BrowserWorkerPolicyError as exc:
@@ -321,9 +409,11 @@ async def close_session(
 
 @router.post("/action", response_model=ActionResponse)
 async def action(
-    payload: BrowserActionRequest, request: Request
+    payload: BrowserActionRequest, request: Request,
+    db: Optional[Session] = Depends(get_db),
+    principal: Principal | None = Depends(get_current_principal_optional),
 ) -> ActionResponse:
-    agent_id = _required_agent_id(request)
+    agent_id = _resolve_agent_id(request, db, principal, required=True)
     await enforce_category_rate_limit(request, "action", session_id=payload.session_id)
     service = ActionService(
         request.app.state.browser_client,
@@ -344,6 +434,8 @@ async def action(
             decision="allow" if result.success else "deny",
             reason="browser action executed",
             request_id=request.state.request_id,
+            organization_id=principal.organization_id if principal else None,
+            agent_id=agent_id,
         )
         return result
     except BrowserWorkerPolicyError as exc:
@@ -359,6 +451,8 @@ async def action(
             decision="deny",
             reason=exc.message,
             request_id=request.state.request_id,
+            organization_id=principal.organization_id if principal else None,
+            agent_id=agent_id,
         )
         _raise_worker_policy_error(exc)
     except (BrowserWorkerTimeout, BrowserWorkerUnavailable, BrowserWorkerResponseError) as exc:
@@ -366,8 +460,12 @@ async def action(
 
 
 @router.post("/screenshot")
-async def screenshot(payload: ScreenshotRequest, request: Request) -> Response:
-    agent_id = _required_agent_id(request)
+async def screenshot(
+    payload: ScreenshotRequest, request: Request,
+    db: Optional[Session] = Depends(get_db),
+    principal: Principal | None = Depends(get_current_principal_optional),
+) -> Response:
+    agent_id = _resolve_agent_id(request, db, principal, required=True)
     await enforce_category_rate_limit(
         request, "screenshot", session_id=payload.session_id
     )
@@ -386,6 +484,8 @@ async def screenshot(payload: ScreenshotRequest, request: Request) -> Response:
             decision="allow",
             reason="screenshot captured",
             request_id=request.state.request_id,
+            organization_id=principal.organization_id if principal else None,
+            agent_id=agent_id,
         )
     except BrowserWorkerPolicyError as exc:
         logger.info(
@@ -414,8 +514,12 @@ async def screenshot(payload: ScreenshotRequest, request: Request) -> Response:
 
 
 @router.post("/extract", response_model=ExtractResponse)
-async def extract(payload: ExtractRequest, request: Request) -> ExtractResponse:
-    agent_id = _required_agent_id(request)
+async def extract(
+    payload: ExtractRequest, request: Request,
+    db: Optional[Session] = Depends(get_db),
+    principal: Principal | None = Depends(get_current_principal_optional),
+) -> ExtractResponse:
+    agent_id = _resolve_agent_id(request, db, principal, required=True)
     await enforce_category_rate_limit(
         request, "extract", session_id=payload.session_id
     )
@@ -437,6 +541,8 @@ async def extract(payload: ExtractRequest, request: Request) -> ExtractResponse:
             decision="allow",
             reason="content extracted",
             request_id=request.state.request_id,
+            organization_id=principal.organization_id if principal else None,
+            agent_id=agent_id,
         )
         return result
     except BrowserWorkerPolicyError as exc:

@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     allow_private_networks: bool = False
     dns_preflight_enabled: bool = True
 
+    # Database
+    database_url: str = ""
+    database_pool_size: int = Field(default=10, ge=1, le=100)
+    database_max_overflow: int = Field(default=20, ge=0, le=100)
+
     # Rate limiting. The memory backend is development/test only; production
     # requires Redis so counters are shared across replicas and survive restarts.
     rate_limit_enabled: bool = True

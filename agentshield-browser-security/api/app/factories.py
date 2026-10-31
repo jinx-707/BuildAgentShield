@@ -2,11 +2,13 @@ import hashlib
 import json
 
 from app.config import Settings
+from app.db.base import get_engine
 from app.interfaces.inspection import ContentInspector
 from app.interfaces.policy import PolicyEngine
 from app.mocks.inspection import MockContentInspector
 from app.mocks.policy import MockPolicyEngine
 from app.security.content_inspector import PromptInjectionInspector
+from app.security.database_policy_engine import DatabasePolicyEngine
 from app.security.dns_policy import DnsValidator
 from app.security.policy_engine import RealPolicyEngine
 from app.security.preflight import NetworkPreflight
@@ -46,6 +48,21 @@ def compute_policy_fingerprint(settings: Settings) -> str:
 
 def build_policy_engine(settings: Settings) -> PolicyEngine:
     backend = settings.policy_backend
+
+    # When a database is configured, the database policy engine resolves the
+    # effective policy from PostgreSQL so dashboard policy changes take effect
+    # in the real enforcement path.
+    if settings.database_url:
+        engine = get_engine()
+        if engine is None:
+            raise RuntimeError("Database not initialized. Call init_db() first.")
+        return DatabasePolicyEngine(
+            allowed_domains=settings.allowed_domains,
+            blocked_domains=settings.blocked_domains,
+            default_domain_policy=settings.default_domain_policy,
+            allowed_ports=settings.allowed_ports,
+            allow_private_networks=settings.allow_private_networks,
+        )
 
     if backend == "mock":
         if settings.environment == "production":
