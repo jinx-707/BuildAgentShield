@@ -63,6 +63,8 @@ class FakeWorkerClient:
             closing=False,
             request_id="test-request",
         )
+        self.session_owners: dict[str, str] = {}
+        self.closed_sessions: set[str] = set()
         self.extract_response = WorkerExtractResponse(
             request_id="test-request",
             session_id="session-123",
@@ -131,6 +133,29 @@ class FakeWorkerClient:
         self.navigate_calls.append(kwargs)
         if self.navigate_error:
             raise self.navigate_error
+        session_id = kwargs.get("session_id")
+        agent_id = kwargs.get("agent_id")
+        if session_id is not None:
+            if session_id in self.closed_sessions:
+                from app.clients.browser_worker import BrowserWorkerPolicyError
+
+                raise BrowserWorkerPolicyError(
+                    "SESSION_NOT_FOUND",
+                    "session not found",
+                    status_code=404,
+                )
+            if (
+                agent_id is not None
+                and session_id in self.session_owners
+                and self.session_owners[session_id] != agent_id
+            ):
+                from app.clients.browser_worker import BrowserWorkerPolicyError
+
+                raise BrowserWorkerPolicyError(
+                    "SESSION_FORBIDDEN",
+                    "session owner does not match the authenticated caller",
+                    status_code=403,
+                )
         return self.navigate_response.model_copy(
             update={"request_id": kwargs["request_id"]}
         )
@@ -139,18 +164,52 @@ class FakeWorkerClient:
         self.create_session_calls.append(kwargs)
         if self.session_error:
             raise self.session_error
+        agent_id = kwargs.get("agent_id")
+        if agent_id:
+            self.session_owners[self.session_status.session_id] = agent_id
         return self.session_status
 
     async def get_session(self, **kwargs) -> SessionStatus:
         self.get_session_calls.append(kwargs)
         if self.session_error:
             raise self.session_error
+        agent_id = kwargs.get("agent_id")
+        session_id = kwargs.get("session_id")
+        if (
+            agent_id is not None
+            and session_id in self.session_owners
+            and self.session_owners[session_id] != agent_id
+        ):
+            from app.clients.browser_worker import BrowserWorkerPolicyError
+
+            raise BrowserWorkerPolicyError(
+                "SESSION_FORBIDDEN",
+                "session owner does not match the authenticated caller",
+                status_code=403,
+            )
         return self.session_status
 
     async def close_session(self, **kwargs) -> SessionCloseResponse:
         self.close_session_calls.append(kwargs)
         if self.session_error:
             raise self.session_error
+        session_id = kwargs.get("session_id")
+        agent_id = kwargs.get("agent_id")
+        if (
+            session_id in self.session_owners
+            and agent_id is not None
+            and self.session_owners[session_id] != agent_id
+        ):
+            from app.clients.browser_worker import BrowserWorkerPolicyError
+
+            raise BrowserWorkerPolicyError(
+                "SESSION_FORBIDDEN",
+                "session owner does not match the authenticated caller",
+                status_code=403,
+            )
+        if session_id in self.session_owners:
+            del self.session_owners[session_id]
+        self.closed_sessions.add(session_id)
         return self.close_session_response.model_copy(
             update={"request_id": kwargs["request_id"]}
         )

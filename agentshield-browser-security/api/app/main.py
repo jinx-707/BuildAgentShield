@@ -6,6 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app import __version__
+from app.api.audit import router as audit_router
 from app.api.browser import router as browser_router
 from app.api.health import router as health_router
 from app.clients.browser_worker import BrowserWorkerClient
@@ -36,6 +37,7 @@ from app.security.rate_limit import (
     validate_rate_limit_settings,
 )
 from app.security.trusted_proxy import parse_trusted_proxies
+from app.services.audit import AuditStore
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +82,7 @@ def create_app(
         app.state.search_provider = search_provider or build_search_provider(
             resolved_settings
         )
+        app.state.audit_store = AuditStore()
         logger.info(
             "application_started",
             extra={
@@ -105,6 +108,19 @@ def create_app(
     app = FastAPI(
         title="AgentShield Browser Security API",
         version=__version__,
+        description=(
+            "AgentShield is an AI agent browser security gateway. "
+            "All agent browser traffic flows through the FastAPI security API, "
+            "which enforces policy, validates destinations, and orchestrates "
+            "isolated browser sessions via the Puppeteer worker and egress proxy."
+        ),
+        contact={
+            "name": "AgentShield Platform Team",
+            "url": "https://agentshield.example.com/support",
+        },
+        license_info={
+            "name": "Proprietary",
+        },
         lifespan=lifespan,
     )
     # Last added is outermost: request IDs and timing cover auth and rate-limit
@@ -134,6 +150,7 @@ def create_app(
     app.add_exception_handler(RateLimitBackendUnavailable, _rate_limit_unavailable)
     app.include_router(health_router)
     app.include_router(browser_router)
+    app.include_router(audit_router)
     return app
 
 

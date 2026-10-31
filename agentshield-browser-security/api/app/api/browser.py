@@ -30,6 +30,7 @@ from app.schemas.search import SearchRequest, SearchResponse
 from app.schemas.session import SessionCreateRequest, SessionCloseResponse, SessionStatus
 from app.security.errors import SecurityViolation
 from app.services.action_service import ActionService
+from app.services.audit import AuditStore
 from app.services.extract_service import ExtractService
 from app.services.identity import (
     InvalidAgentIdError,
@@ -134,13 +135,32 @@ async def navigate(
     )
 
     try:
-        return await orchestrator.navigate(
+        result = await orchestrator.navigate(
             payload, request_id=request_id, agent_id=agent_id
         )
+        audit_store = request.app.state.audit_store
+        audit_store.add(
+            type="navigation.allow",
+            actor=agent_id,
+            target=result.final_url,
+            decision="allow",
+            reason="navigation permitted by policy",
+            request_id=request_id,
+        )
+        return result
     except SecurityViolation as exc:
         logger.info(
             "browser_navigation_blocked",
             extra={"code": exc.code, "reason": exc.message},
+        )
+        audit_store = request.app.state.audit_store
+        audit_store.add(
+            type="navigation.deny",
+            actor=agent_id,
+            target=str(payload.url),
+            decision="deny",
+            reason=exc.message,
+            request_id=request_id,
         )
         raise HTTPException(
             status_code=exc.http_status,
@@ -150,6 +170,15 @@ async def navigate(
         logger.info(
             "browser_navigation_denied",
             extra={"policy_name": exc.policy_name, "reason": exc.reason},
+        )
+        audit_store = request.app.state.audit_store
+        audit_store.add(
+            type="navigation.deny",
+            actor=agent_id,
+            target=str(payload.url),
+            decision="deny",
+            reason=exc.reason,
+            request_id=request_id,
         )
         raise HTTPException(
             status_code=403,
@@ -164,6 +193,15 @@ async def navigate(
             "redirect_destination_blocked",
             extra={"final_url": exc.final_url},
         )
+        audit_store = request.app.state.audit_store
+        audit_store.add(
+            type="navigation.blocked_redirect",
+            actor=agent_id,
+            target=exc.final_url,
+            decision="deny",
+            reason="redirect destination blocked by policy",
+            request_id=request_id,
+        )
         raise HTTPException(
             status_code=403,
             detail={
@@ -175,6 +213,15 @@ async def navigate(
         logger.info(
             "browser_worker_navigation_blocked",
             extra={"code": exc.code, "worker_status": exc.status_code},
+        )
+        audit_store = request.app.state.audit_store
+        audit_store.add(
+            type="navigation.deny",
+            actor=agent_id,
+            target=str(payload.url),
+            decision="deny",
+            reason=exc.message,
+            request_id=request_id,
         )
         _raise_worker_policy_error(exc)
     except (BrowserWorkerTimeout, BrowserWorkerUnavailable, BrowserWorkerResponseError) as exc:
@@ -189,11 +236,21 @@ async def create_session(
     await enforce_category_rate_limit(request, "session_create")
     service = SessionService(request.app.state.browser_client)
     try:
-        return await service.create(
+        result = await service.create(
             payload or SessionCreateRequest(),
             agent_id=agent_id,
             request_id=request.state.request_id,
         )
+        audit_store = request.app.state.audit_store
+        audit_store.add(
+            type="session.create",
+            actor=agent_id,
+            session_id=result.session_id,
+            decision="allow",
+            reason="session created",
+            request_id=request.state.request_id,
+        )
+        return result
     except BrowserWorkerPolicyError as exc:
         logger.info(
             "browser_session_create_refused",
@@ -212,11 +269,21 @@ async def get_session(
     agent_id = _required_agent_id(request)
     service = SessionService(request.app.state.browser_client)
     try:
-        return await service.get(
+        result = await service.get(
             session_id=session_id,
             agent_id=agent_id,
             request_id=request.state.request_id,
         )
+        audit_store = request.app.state.audit_store
+        audit_store.add(
+            type="session.read",
+            actor=agent_id,
+            session_id=session_id,
+            decision="allow",
+            reason="session read",
+            request_id=request.state.request_id,
+        )
+        return result
     except BrowserWorkerPolicyError as exc:
         _raise_worker_policy_error(exc)
     except (BrowserWorkerTimeout, BrowserWorkerUnavailable, BrowserWorkerResponseError) as exc:
@@ -231,11 +298,21 @@ async def close_session(
     agent_id = _required_agent_id(request)
     service = SessionService(request.app.state.browser_client)
     try:
-        return await service.close(
+        result = await service.close(
             session_id=session_id,
             agent_id=agent_id,
             request_id=request.state.request_id,
         )
+        audit_store = request.app.state.audit_store
+        audit_store.add(
+            type="session.close",
+            actor=agent_id,
+            session_id=session_id,
+            decision="allow",
+            reason="session closed",
+            request_id=request.state.request_id,
+        )
+        return result
     except BrowserWorkerPolicyError as exc:
         _raise_worker_policy_error(exc)
     except (BrowserWorkerTimeout, BrowserWorkerUnavailable, BrowserWorkerResponseError) as exc:
@@ -253,15 +330,35 @@ async def action(
         request.app.state.content_inspector,
     )
     try:
-        return await service.act(
+        result = await service.act(
             payload,
             agent_id=agent_id,
             request_id=request.state.request_id,
         )
+        audit_store = request.app.state.audit_store
+        audit_store.add(
+            type="action.execute",
+            actor=agent_id,
+            session_id=payload.session_id,
+            target=result.final_url,
+            decision="allow" if result.success else "deny",
+            reason="browser action executed",
+            request_id=request.state.request_id,
+        )
+        return result
     except BrowserWorkerPolicyError as exc:
         logger.info(
             "browser_action_refused",
             extra={"code": exc.code, "worker_status": exc.status_code},
+        )
+        audit_store = request.app.state.audit_store
+        audit_store.add(
+            type="action.refuse",
+            actor=agent_id,
+            session_id=payload.session_id,
+            decision="deny",
+            reason=exc.message,
+            request_id=request.state.request_id,
         )
         _raise_worker_policy_error(exc)
     except (BrowserWorkerTimeout, BrowserWorkerUnavailable, BrowserWorkerResponseError) as exc:
@@ -279,6 +376,15 @@ async def screenshot(payload: ScreenshotRequest, request: Request) -> Response:
         result = await service.capture(
             payload,
             agent_id=agent_id,
+            request_id=request.state.request_id,
+        )
+        audit_store = request.app.state.audit_store
+        audit_store.add(
+            type="screenshot.capture",
+            actor=agent_id,
+            session_id=payload.session_id,
+            decision="allow",
+            reason="screenshot captured",
             request_id=request.state.request_id,
         )
     except BrowserWorkerPolicyError as exc:
@@ -318,11 +424,21 @@ async def extract(payload: ExtractRequest, request: Request) -> ExtractResponse:
         request.app.state.content_inspector,
     )
     try:
-        return await service.extract(
+        result = await service.extract(
             payload,
             agent_id=agent_id,
             request_id=request.state.request_id,
         )
+        audit_store = request.app.state.audit_store
+        audit_store.add(
+            type="extract.read",
+            actor=agent_id,
+            session_id=payload.session_id,
+            decision="allow",
+            reason="content extracted",
+            request_id=request.state.request_id,
+        )
+        return result
     except BrowserWorkerPolicyError as exc:
         logger.info(
             "browser_extract_refused",
