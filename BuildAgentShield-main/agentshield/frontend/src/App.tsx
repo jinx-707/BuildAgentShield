@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import {
   Activity,
+  AlertCircle,
   ArrowDownToLine,
   ArrowRight,
   ArrowUpRight,
@@ -10,22 +11,30 @@ import {
   CheckCheck,
   ChevronDown,
   ChevronRight,
+  Circle,
   CircleHelp,
+  Clock,
   Clock3,
   FileCheck2,
+  FileText,
   FlaskConical,
   Globe,
+  HelpCircle,
   KeyRound,
   LayoutDashboard,
+  Loader2,
   LogOut,
   Menu,
   Plus,
   Search,
   Settings2,
   Shield,
+  ShieldAlert,
   ShieldCheck,
   SlidersHorizontal,
+  Square,
   Terminal,
+  Trash2,
   Users,
   X,
   Zap,
@@ -41,6 +50,7 @@ import {
   Toggle,
   toneFor,
 } from "./components/ui"
+import { LiveExecution, EvidenceExplorer, ReportViewer } from "./components/CyberRange"
 import Overview from "./pages/Overview"
 import BrowserSessions from "./pages/BrowserSessions"
 import {
@@ -67,6 +77,17 @@ import {
   downloadAudit,
   getAgents as getAgentsApi,
   getApprovals as getApprovalsApi,
+  getCyberRangeScenarios as getCyberRangeScenariosApi,
+  createCampaign as createCampaignApi,
+  listCampaigns as listCampaignsApi,
+  getCampaign as getCampaignApi,
+  cancelCampaign as cancelCampaignApi,
+  getCampaignReport as getCampaignReportApi,
+  getSimulation as getSimulationApi,
+  getSimulationEvidence as getSimulationEvidenceApi,
+  streamSimulationEvents as streamSimulationEventsApi,
+  streamCampaignEvents as streamCampaignEventsApi,
+  runSingleScenario as runSingleScenarioApi,
   getAttackScenarios as getAttackScenariosApi,
   getAudit as getAuditApi,
   getOverviewStats,
@@ -198,6 +219,18 @@ export default function App() {
   const [auditVerification, setAuditVerification] =
     useState<AuditVerification | null>(null)
   const [attackScenarios, setAttackScenarios] = useState<Array<{ id: string; name: string; description: string; category: string }>>([])
+  const [cyberRangeScenarios, setCyberRangeScenarios] = useState<Array<any>>([])
+  const [campaigns, setCampaigns] = useState<any[]>([])
+  const [selectedCampaign, setSelectedCampaign] = useState<any | null>(null)
+  const [campaignSimulations, setCampaignSimulations] = useState<any[]>([])
+  const [liveExecutionOpen, setLiveExecutionOpen] = useState(false)
+  const [evidenceExplorerOpen, setEvidenceExplorerOpen] = useState(false)
+  const [evidenceSimulationId, setEvidenceSimulationId] = useState<string | null>(null)
+  const [reportViewerOpen, setReportViewerOpen] = useState(false)
+  const [campaignReport, setCampaignReport] = useState<any>(null)
+  const [creatingCampaign, setCreatingCampaign] = useState(false)
+  const [newCampaignName, setNewCampaignName] = useState("")
+  const [selectedScenarios, setSelectedScenarios] = useState<string[]>([])
   const pending = approvals.filter((a) => a.status === "Pending").length
   const selectedAgentRecord = agents.find(
     (agent) => agent.name === selectedAgent,
@@ -260,6 +293,20 @@ export default function App() {
     )
     setAttackScenarios(scenarios)
     setWorkspaceName(workspace.name)
+    // Load cyber-range scenarios
+    try {
+      const crScenarios = await getCyberRangeScenariosApi()
+      setCyberRangeScenarios(crScenarios)
+    } catch {
+      setCyberRangeScenarios([])
+    }
+    // Load campaigns
+    try {
+      const campaignList = await listCampaignsApi()
+      setCampaigns(campaignList)
+    } catch {
+      setCampaigns([])
+    }
     setWorkspaceDraft(workspace.name)
     if (user) setSessionUser(user)
     setBackendMode(true)

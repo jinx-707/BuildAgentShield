@@ -896,6 +896,225 @@ export async function getAttackScenarios() {
   }))
 }
 
+export type CyberRangeScenario = {
+  scenario_id: string
+  name: string
+  description: string
+  target_service: string
+  risk_category: string
+  required_services: string[]
+  available: boolean
+}
+
+export type Campaign = {
+  id: string
+  organization_id: string
+  user_id: string
+  name: string
+  description: string | null
+  policy_version: string
+  status: string
+  scenario_ids: string[]
+  execution_mode: string
+  max_concurrency: number
+  started_at: string | null
+  completed_at: string | null
+  error: string | null
+  created_at: string
+}
+
+export type Simulation = {
+  id: string
+  campaign_id: string
+  organization_id: string
+  scenario_id: string
+  target_id: string
+  status: string
+  assessment: string | null
+  policy_version: string
+  browser_session_id: string | null
+  agent_id: string | null
+  started_at: string | null
+  completed_at: string | null
+  error: string | null
+  agent_shield_decision: string | null
+  proxy_decision: string | null
+  created_at: string
+}
+
+export type SimulationEvidence = {
+  id: string
+  simulation_id: string
+  evidence_type: string
+  description: string | null
+  content: Record<string, unknown>
+  source: string
+  created_at: string | null
+}
+
+export async function getSimulationEvidence(simulationId: string): Promise<SimulationEvidence[]> {
+  return request<SimulationEvidence[]>(`/simulations/${simulationId}/evidence`)
+}
+
+export type CampaignReport = {
+  campaign_id: string
+  campaign_name: string
+  organization_id: string
+  policy_version: string
+  execution_mode: string
+  started_at: string | null
+  completed_at: string | null
+  summary: {
+    total_scenarios: number
+    passed: number
+    failed: number
+    errors: number
+    inconclusive: number
+    detection_coverage_pct: number
+    enforcement_coverage_pct: number
+  }
+  scenario_results: Array<{
+    scenario_id: string
+    scenario_name: string
+    status: string
+    assessment: string | null
+    agent_shield_decision: string | null
+    proxy_decision: string | null
+    evidence_count: number
+  }>
+  failed_controls: Array<{
+    scenario_id: string
+    scenario_name: string
+    assessment: string
+    error: string | null
+  }>
+  inconclusive_tests: Array<{
+    scenario_id: string
+    scenario_name: string
+    reason: string
+  }>
+  recommendations: string[]
+  known_limitations: string[]
+}
+
+export async function getCyberRangeScenarios(): Promise<CyberRangeScenario[]> {
+  return request<CyberRangeScenario[]>("/simulations/scenarios")
+}
+
+export async function createCampaign(campaign: {
+  organization_id: string
+  user_id: string
+  name: string
+  description?: string
+  policy_version?: string
+  scenario_ids: string[]
+  execution_mode?: string
+  max_concurrency?: number
+  agent_id?: string
+}): Promise<Campaign> {
+  return request<Campaign>("/simulations/campaigns", {
+    method: "POST",
+    body: campaign,
+  })
+}
+
+export async function listCampaigns(limit = 100, offset = 0): Promise<Campaign[]> {
+  const params = new URLSearchParams()
+  params.set("limit", String(limit))
+  params.set("offset", String(offset))
+  return request<Campaign[]>(`/simulations/campaigns?${params.toString()}`)
+}
+
+export async function getCampaign(campaignId: string): Promise<Campaign> {
+  return request<Campaign>(`/simulations/campaigns/${campaignId}`)
+}
+
+export async function cancelCampaign(campaignId: string): Promise<{ status: string }> {
+  return request<{ status: string }>(`/simulations/campaigns/${campaignId}/cancel`, {
+    method: "POST",
+  })
+}
+
+export async function getCampaignReport(campaignId: string): Promise<CampaignReport> {
+  return request<CampaignReport>(`/simulations/campaigns/${campaignId}/report`)
+}
+
+export async function getSimulation(simulationId: string): Promise<Simulation> {
+  return request<Simulation>(`/simulations/${simulationId}`)
+}
+
+// Duplicate removed
+export function streamSimulationEvents(
+  simulationId: string,
+  onEvent: (event: { id: string; stage: string; message: string; data: Record<string, unknown>; timestamp: string }) => void,
+  onError?: (error: Error) => void
+): () => void {
+  const token = getAccessToken()
+  const orgId = getStoredUser()?.tenant_id
+  const headers: Record<string, string> = {}
+  if (token) headers.Authorization = `Bearer ${token}`
+  if (orgId) headers["x-organization-id"] = orgId
+
+  const eventSource = new EventSource(`${apiBaseUrl}/simulations/${simulationId}/events`, { withCredentials: false })
+  eventSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data)
+      onEvent(data)
+    } catch {
+      // Ignore parse errors
+    }
+  }
+  eventSource.onerror = (error) => {
+    if (onError) onError(new Error("EventSource error"))
+    eventSource.close()
+  }
+
+  return () => eventSource.close()
+}
+
+export function streamCampaignEvents(
+  campaignId: string,
+  onEvent: (event: { id: string; type: string; message: string; data: Record<string, unknown>; timestamp: string }) => void,
+  onError?: (error: Error) => void
+): () => void {
+  const token = getAccessToken()
+  const orgId = getStoredUser()?.tenant_id
+  const headers: Record<string, string> = {}
+  if (token) headers.Authorization = `Bearer ${token}`
+  if (orgId) headers["x-organization-id"] = orgId
+
+  const eventSource = new EventSource(`${apiBaseUrl}/simulations/campaigns/${campaignId}/events`, { withCredentials: false })
+  eventSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data)
+      onEvent(data)
+    } catch {
+      // Ignore parse errors
+    }
+  }
+  eventSource.onerror = (error) => {
+    if (onError) onError(new Error("EventSource error"))
+    eventSource.close()
+  }
+
+  return () => eventSource.close()
+}
+
+export async function runSingleScenario(
+  scenarioId: string,
+  organizationId: string,
+  agentId?: string,
+  sessionId?: string
+): Promise<Simulation> {
+  const params = new URLSearchParams()
+  params.set("organization_id", organizationId)
+  if (agentId) params.set("agent_id", agentId)
+  if (sessionId) params.set("session_id", sessionId)
+  return request<Simulation>(`/simulations/scenarios/${scenarioId}/run?${params.toString()}`, {
+    method: "POST",
+  })
+}
+
 export async function runSimulator(_scenarioIds: string[]) {
   const results = await request<{
     results: Array<{

@@ -57,76 +57,81 @@ decision := {
   input.local_decision != "QUARANTINE"
 }
 
-deny_reason := "Tool is not registered." if {
+deny_reasons contains "Tool is not registered." if {
   not input.tool.name in tools
 }
 
-deny_reason := reason if {
+deny_reasons contains reason if {
   input.tool.name in tools
   reason := permission_reason
   reason != ""
 }
 
-deny_reason := "Critical inspection finding." if {
+deny_reasons contains "Critical inspection finding." if {
   some finding in input.findings
   finding.severity == "critical"
 }
 
-deny_reason := "Path traversal detected." if {
+deny_reasons contains "Path traversal detected." if {
   some finding in input.findings
   finding.code == "path_traversal"
 }
 
-deny_reason := "Destructive command detected." if {
+deny_reasons contains "Destructive command detected." if {
   some finding in input.findings
   finding.code == "destructive_command"
 }
 
-deny_reason := "Destination host is not allowlisted." if {
+deny_reasons contains "Destination host is not allowlisted." if {
   input.tool.name in {"browse_url", "download_file", "call_external_api"}
   host := request_host
   not host_allowed(host)
 }
 
-deny_reason := "Payment exceeds the agent budget." if {
+deny_reasons contains "Payment exceeds the agent budget." if {
   input.tool.name == "initiate_payment"
   amount := to_number(input.arguments.amount)
   budget := to_number(object.get(input.principal.scopes, "payment_budget", 0))
   amount > budget
 }
 
-deny_reason := "Merchant is not allowlisted." if {
+deny_reasons contains "Merchant is not allowlisted." if {
   input.tool.name == "initiate_payment"
   merchant := object.get(input.arguments, "merchant", "")
   merchants := object.get(input.principal.scopes, "allowed_merchants", [])
   not merchant in merchants
 }
 
-deny_reason := "MCP server is not allowlisted." if {
+deny_reasons contains "MCP server is not allowlisted." if {
   input.tool.name == "mcp_call"
   server := object.get(input.arguments, "server", "")
   servers := object.get(input.principal.scopes, "allowed_servers", [])
   not server in servers
 }
 
-deny_reason := "Environment variable is not explicitly scoped." if {
+deny_reasons contains "Environment variable is not explicitly scoped." if {
   input.tool.name == "read_env_var"
   name := object.get(input.arguments, "name", "")
   allowed := object.get(input.principal.scopes, "allowed_env", [])
   not name in allowed
 }
 
-deny_reason := "Protected system file is not explicitly scoped." if {
+deny_reasons contains "Protected system file is not explicitly scoped." if {
   input.tool.name == "read_system_file"
   path := object.get(input.arguments, "path", "")
   allowed := object.get(input.principal.scopes, "allowed_system_paths", [])
   not path in allowed
 }
 
-deny_reason := "File path is outside the workspace scope." if {
+deny_reasons contains "File path is outside the workspace scope." if {
   input.tool.name in {"read_file", "delete_file"}
   path := object.get(input.arguments, "path", "")
   not path_allowed(path)
+}
+
+deny_reason := reason if {
+  some reason in deny_reasons
+  reason := reason
 }
 
 deny_policy := "opa.registry" if {
@@ -195,7 +200,7 @@ request_host := host if {
 
 split_url_host(raw) := host if {
   parts := split(raw, "/")
-  length(parts) > 2
+  count(parts) > 2
   authority := parts[2]
   host := split(authority, ":")[0]
 }
