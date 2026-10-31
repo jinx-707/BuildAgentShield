@@ -1,7 +1,7 @@
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, status
 
 from app.clients.browser_worker import (
     BrowserWorkerPolicyError,
@@ -38,6 +38,7 @@ from app.schemas.session import SessionCreateRequest, SessionCloseResponse, Sess
 from app.security.errors import SecurityViolation
 from app.services.action_service import ActionService
 from app.services.audit import AuditStore
+from app.services.capability_service import CapabilityService
 from app.services.extract_service import ExtractService
 from app.services.identity import (
     InvalidAgentIdError,
@@ -415,6 +416,81 @@ async def action(
 ) -> ActionResponse:
     agent_id = _resolve_agent_id(request, db, principal, required=True)
     await enforce_category_rate_limit(request, "action", session_id=payload.session_id)
+
+    # --- Capability enforcement (skipped when no database configured) ---
+    if db is not None:
+        agent = (
+            db.query(Agent)
+            .filter(
+                Agent.agent_id == agent_id,
+                Agent.organization_id == (principal.organization_id if principal else None),
+            )
+            .first()
+        )
+        if agent is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"code": "AGENT_IDENTIFICATION_REQUIRED", "message": "agent identification required"},
+            )
+
+        org_id = principal.organization_id if principal else None
+        cap_svc = CapabilityService(db=db)
+        # Browser actions: tool_name is the action type (click, type, scroll, etc.)
+        tool_name = payload.action
+        target_str = None
+        if payload.target is not None:
+            target_str = payload.target.selector or payload.target.role or payload.target.name or ""
+        elif payload.selector:
+            target_str = payload.selector
+        cap_decision = cap_svc.check_capability(
+            agent=agent,
+            organization_id=org_id or str(agent.organization_id),
+            capability_key=None,
+            tool_name=tool_name,
+            target=target_str or None,
+            tool_args={},
+        )
+        if not cap_decision.allowed:
+            if cap_decision.require_approval:
+                from app.db.ai_models import ApprovalRequest as ApprovalRequestModel
+                from app.db.models import Capability as CapabilityModel
+                cap_row = (
+                    db.query(CapabilityModel)
+                    .filter(
+                        CapabilityModel.organization_id == agent.organization_id,
+                    )
+                    .first()
+                )
+                if cap_row is not None:
+                    approval = ApprovalRequestModel(
+                        organization_id=agent.organization_id,
+                        agent_id=agent.id,
+                        capability_id=cap_row.id,
+                        tool_name=tool_name,
+                        tool_args={},
+                        target=target_str,
+                        status="pending",
+                        requested_by=str(principal.user_id or principal.agent_id or "system") if principal else "system",
+                    )
+                    db.add(approval)
+                    db.commit()
+            audit_store = request.app.state.audit_store
+            audit_store.add(
+                type="action.refuse",
+                actor=agent_id,
+                session_id=payload.session_id,
+                target=target_str,
+                decision="deny",
+                reason=cap_decision.reason or "capability check failed",
+                request_id=request.state.request_id,
+                organization_id=org_id,
+                agent_id=agent_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "CAPABILITY_DENIED", "message": cap_decision.reason or "capability check failed"},
+            )
+
     service = ActionService(
         request.app.state.browser_client,
         request.app.state.content_inspector,

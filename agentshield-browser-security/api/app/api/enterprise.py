@@ -52,6 +52,9 @@ from app.db.models import (
     AuditEvent,
     SecurityIncident,
     Deployment,
+    Capability,
+    AgentCapability,
+    ApprovalRequest,
 )
 
 router = APIRouter(prefix="/v1", tags=["enterprise"])
@@ -84,13 +87,13 @@ class RegisterRequest(BaseModel):
 
 
 class RegisterResponse(BaseModel):
-    user_id: str
-    organization_id: str
+    user_id: UUID
+    organization_id: UUID
     organization_slug: str
 
 
 class OrganizationOut(BaseModel):
-    id: str
+    id: UUID
     name: str
     slug: str
     is_active: bool
@@ -101,9 +104,9 @@ class OrganizationOut(BaseModel):
 
 
 class MembershipOut(BaseModel):
-    id: str
-    user_id: str
-    organization_id: str
+    id: UUID
+    user_id: UUID
+    organization_id: UUID
     role: str
     is_active: bool
 
@@ -112,7 +115,7 @@ class MembershipOut(BaseModel):
 
 
 class UserOut(BaseModel):
-    id: str
+    id: UUID
     email: str
     full_name: Optional[str]
     is_active: bool
@@ -123,12 +126,14 @@ class UserOut(BaseModel):
 
 
 class AgentOut(BaseModel):
-    id: str
+    id: UUID
     agent_id: str
     name: str
     status: str
     created_at: datetime
     last_activity_at: Optional[datetime]
+    permissions: Optional[list[str]] = None
+    scopes: Optional[dict] = None
 
     class Config:
         from_attributes = True
@@ -145,8 +150,8 @@ class AgentCredentialResponse(BaseModel):
 
 
 class PolicyOut(BaseModel):
-    id: str
-    organization_id: str
+    id: UUID
+    organization_id: UUID
     name: str
     description: Optional[str]
     version: int
@@ -157,7 +162,7 @@ class PolicyOut(BaseModel):
     default_domain_policy: str
     allowed_ports: list[str]
     allow_private_networks: bool
-    agent_id: Optional[str]
+    agent_id: Optional[UUID]
     created_at: datetime
 
     class Config:
@@ -189,7 +194,7 @@ class PolicyUpdateRequest(BaseModel):
 
 
 class AuditEventOut(BaseModel):
-    id: str
+    id: UUID
     event_type: str
     event_category: Optional[str]
     actor: Optional[str]
@@ -207,7 +212,7 @@ class AuditEventOut(BaseModel):
 
 
 class IncidentOut(BaseModel):
-    id: str
+    id: UUID
     title: str
     description: Optional[str]
     severity: str
@@ -223,8 +228,8 @@ class IncidentOut(BaseModel):
 
 
 class PolicyVersionOut(BaseModel):
-    id: str
-    policy_id: str
+    id: UUID
+    policy_id: UUID
     version: int
     allowed_domains: list[str]
     blocked_domains: list[str]
@@ -232,7 +237,7 @@ class PolicyVersionOut(BaseModel):
     allowed_ports: list[str]
     allow_private_networks: bool
     change_reason: Optional[str]
-    changed_by_user_id: Optional[str]
+    changed_by_user_id: Optional[UUID]
     created_at: datetime
 
     class Config:
@@ -252,8 +257,8 @@ class PolicyActivateRequest(BaseModel):
 
 
 class DeploymentOut(BaseModel):
-    id: str
-    organization_id: str
+    id: UUID
+    organization_id: UUID
     name: str
     deployment_id: str
     status: str
@@ -304,11 +309,12 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 
     # Use the first (primary) organization
     primary = memberships[0]
+    org_id = str(primary.organization_id)
     org = db.query(Organization).filter(Organization.id == primary.organization_id).first()
 
     token = create_access_token(
-        subject=user.id,
-        organization_id=primary.organization_id,
+        subject=str(user.id),
+        organization_id=org_id,
         roles=[primary.role],
     )
     user.last_login_at = datetime.now(timezone.utc)
@@ -316,7 +322,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 
     return LoginResponse(
         access_token=token,
-        organization_id=primary.organization_id,
+        organization_id=org_id,
         organization_name=org.name if org else "",
         role=primary.role,
     )
@@ -427,6 +433,37 @@ def create_org_agent(
     secret = getattr(agent, "_raw_secret", None)
     if not secret:
         raise HTTPException(status_code=500, detail={"code": "CREDENTIAL_ERROR", "message": "failed to issue agent secret"})
+
+    # Ensure capabilities exist for the organization, then create default
+    # (disabled) AgentCapability records for the new agent.
+    org_caps = (
+        db.query(Capability)
+        .filter(Capability.organization_id == org_id, Capability.is_active == True)  # noqa: E712
+        .all()
+    )
+    if not org_caps:
+        _seed_default_capabilities(db, org_id)
+        org_caps = (
+            db.query(Capability)
+            .filter(Capability.organization_id == org_id, Capability.is_active == True)  # noqa: E712
+            .all()
+        )
+    for cap in org_caps:
+        db.add(
+            AgentCapability(
+                organization_id=org_id,
+                agent_id=agent.id,
+                capability_id=cap.id,
+                enabled=False,
+                allowed_tools=list(cap.tools or []),
+                resource_scope=[],
+                allowed_domains=[],
+                require_approval=False,
+                payment_budget=None,
+            )
+        )
+    db.commit()
+
     return AgentCredentialResponse(agent_id=agent.agent_id, name=agent.name, secret=secret)
 
 
@@ -448,6 +485,470 @@ def revoke_agent(
     agent.status = "revoked"
     db.commit()
     return {"message": "agent revoked"}
+
+
+# ---------------------------------------------------------------------------
+# Capability permission schemas
+# ---------------------------------------------------------------------------
+
+
+class CapabilityOut(BaseModel):
+    id: UUID
+    organization_id: UUID
+    key: str
+    name: str
+    description: Optional[str]
+    tools: list[str]
+    is_system: bool
+    is_active: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AgentCapabilityOut(BaseModel):
+    id: UUID
+    organization_id: UUID
+    agent_id: UUID
+    capability_id: UUID
+    capability_key: Optional[str]
+    capability_name: Optional[str]
+    enabled: bool
+    allowed_tools: list[str]
+    resource_scope: list[str]
+    allowed_domains: list[str]
+    require_approval: bool
+    payment_budget: Optional[int]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AgentCapabilityUpdateRequest(BaseModel):
+    enabled: Optional[bool] = None
+    allowed_tools: Optional[list[str]] = None
+    resource_scope: Optional[list[str]] = None
+    allowed_domains: Optional[list[str]] = None
+    require_approval: Optional[bool] = None
+    payment_budget: Optional[int] = None
+
+
+class AgentPermissionsPatch(BaseModel):
+    permissions: Optional[list[str]] = None
+    scopes: Optional[dict] = None
+
+
+class ApprovalRequestOut(BaseModel):
+    id: UUID
+    organization_id: UUID
+    agent_id: UUID
+    capability_id: UUID
+    tool_name: str
+    tool_args: dict
+    target: Optional[str]
+    status: str
+    requested_by: Optional[str]
+    approved_by: Optional[str]
+    requested_at: datetime
+    approved_at: Optional[datetime]
+    reason: Optional[str]
+
+    class Config:
+        from_attributes = True
+
+
+class ApprovalActionRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Agent capability endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.patch("/agents/{agent_id}", response_model=AgentOut)
+def update_agent_capabilities(
+    agent_id: str,
+    payload: AgentPermissionsPatch,
+    principal: Principal = Depends(get_current_principal),
+    db: Session = Depends(get_db),
+):
+    """Update an agent's permissions and scopes.
+
+    Permissions are stored as a JSON list on the Agent model. Scopes are
+    stored as a JSON object. Both fields are organization-scoped.
+    """
+    agent = db.query(Agent).filter(Agent.agent_id == agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "agent not found"})
+    if principal.organization_id != agent.organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "CROSS_TENANT_ACCESS", "message": "cannot modify agent from another organization"},
+        )
+
+    if payload.permissions is not None:
+        agent.permissions = payload.permissions
+    if payload.scopes is not None:
+        agent.scopes = payload.scopes
+
+    db.commit()
+    db.refresh(agent)
+    return agent
+
+
+@router.get(
+    "/organizations/{org_id}/capabilities",
+    response_model=list[CapabilityOut],
+)
+def list_capabilities(
+    org_id: str,
+    principal: Principal = Depends(require_organization_access()),
+    db: Session = Depends(get_db),
+):
+    """List all capabilities defined for an organization. Seeds defaults if none exist."""
+    if principal.organization_id != org_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "CROSS_TENANT_ACCESS", "message": "cannot list capabilities for another organization"},
+        )
+    capabilities = (
+        db.query(Capability)
+        .filter(Capability.organization_id == org_id, Capability.is_active == True)  # noqa: E712
+        .all()
+    )
+    if not capabilities:
+        _seed_default_capabilities(db, org_id)
+        capabilities = (
+            db.query(Capability)
+            .filter(Capability.organization_id == org_id, Capability.is_active == True)  # noqa: E712
+            .all()
+        )
+    return capabilities
+
+
+def _seed_default_capabilities(db: Session, org_id: str) -> None:
+    """Seed default capability definitions for an organization."""
+    defaults = [
+        {
+            "key": "documents",
+            "name": "Documents",
+            "description": "Read and analyze agent-accessible documents",
+            "tools": ["documents.read"],
+        },
+        {
+            "key": "local_files",
+            "name": "Local files",
+            "description": "Scoped access to workspace files and folders",
+            "tools": ["local_files.read", "files.delete"],
+        },
+        {
+            "key": "system_files",
+            "name": "System files",
+            "description": "Protected operating system resources",
+            "tools": ["system_files.read"],
+        },
+        {
+            "key": "environment",
+            "name": "Environment & secrets",
+            "description": "Controlled access to environment variables",
+            "tools": ["environment.read"],
+        },
+        {
+            "key": "terminal",
+            "name": "Terminal",
+            "description": "Sandboxed command execution",
+            "tools": ["terminal.run"],
+        },
+        {
+            "key": "browser",
+            "name": "Browser",
+            "description": "Search, browse, and interact with the web",
+            "tools": ["browser.read"],
+        },
+        {
+            "key": "email",
+            "name": "Email",
+            "description": "Read, draft, and send messages",
+            "tools": ["email.send"],
+        },
+        {
+            "key": "dlp",
+            "name": "Data loss prevention",
+            "description": "Inspect, redact, and safely export data",
+            "tools": ["dlp.export"],
+        },
+        {
+            "key": "downloads",
+            "name": "Downloads",
+            "description": "Inspect and quarantine downloaded files",
+            "tools": ["downloads.write"],
+        },
+        {
+            "key": "payments",
+            "name": "Payments",
+            "description": "Budget-controlled sandbox transactions",
+            "tools": ["payments.execute"],
+        },
+        {
+            "key": "external_api",
+            "name": "External APIs",
+            "description": "Authorized API and MCP connections",
+            "tools": ["external_api.call", "mcp.call"],
+        },
+    ]
+    for d in defaults:
+        cap = Capability(
+            organization_id=org_id,
+            key=d["key"],
+            name=d["name"],
+            description=d["description"],
+            tools=d["tools"],
+            is_system=True,
+            is_active=True,
+        )
+        db.add(cap)
+    db.commit()
+
+
+@router.get(
+    "/agents/{agent_id}/capabilities",
+    response_model=list[AgentCapabilityOut],
+)
+def get_agent_capabilities(
+    agent_id: str,
+    principal: Principal = Depends(get_current_principal),
+    db: Session = Depends(get_db),
+):
+    """Retrieve an agent's capability permissions."""
+    agent = db.query(Agent).filter(Agent.agent_id == agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "agent not found"})
+    if principal.organization_id != agent.organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "CROSS_TENANT_ACCESS", "message": "cannot access agent capabilities from another organization"},
+        )
+
+    caps = (
+        db.query(AgentCapability, Capability)
+        .join(Capability, AgentCapability.capability_id == Capability.id)
+        .filter(AgentCapability.agent_id == agent.id)
+        .all()
+    )
+    results = []
+    for ac, cap in caps:
+        results.append(
+            AgentCapabilityOut(
+                id=ac.id,
+                organization_id=ac.organization_id,
+                agent_id=ac.agent_id,
+                capability_id=ac.capability_id,
+                capability_key=cap.key,
+                capability_name=cap.name,
+                enabled=ac.enabled,
+                allowed_tools=ac.allowed_tools or [],
+                resource_scope=ac.resource_scope or [],
+                allowed_domains=ac.allowed_domains or [],
+                require_approval=ac.require_approval,
+                payment_budget=ac.payment_budget,
+                created_at=ac.created_at,
+                updated_at=ac.updated_at,
+            )
+        )
+    return results
+
+
+@router.patch(
+    "/agents/{agent_id}/capabilities/{capability_key}",
+    response_model=AgentCapabilityOut,
+)
+def update_agent_capability(
+    agent_id: str,
+    capability_key: str,
+    payload: AgentCapabilityUpdateRequest,
+    principal: Principal = Depends(get_current_principal),
+    db: Session = Depends(get_db),
+):
+    """Update an agent's capability configuration (enabled state, tools, scope, domains, approval)."""
+    agent = db.query(Agent).filter(Agent.agent_id == agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "agent not found"})
+    if principal.organization_id != agent.organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "CROSS_TENANT_ACCESS", "message": "cannot modify agent capabilities from another organization"},
+        )
+
+    capability = (
+        db.query(Capability)
+        .filter(Capability.key == capability_key, Capability.organization_id == agent.organization_id)
+        .first()
+    )
+    if not capability:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "capability not found"})
+
+    agent_cap = (
+        db.query(AgentCapability)
+        .filter(AgentCapability.agent_id == agent.id, AgentCapability.capability_id == capability.id)
+        .first()
+    )
+    if not agent_cap:
+        agent_cap = AgentCapability(
+            organization_id=agent.organization_id,
+            agent_id=agent.id,
+            capability_id=capability.id,
+            enabled=False,
+            allowed_tools=list(capability.tools or []),
+            resource_scope=[],
+            allowed_domains=[],
+            require_approval=False,
+            payment_budget=None,
+        )
+        db.add(agent_cap)
+        db.flush()
+
+    if payload.enabled is not None:
+        agent_cap.enabled = payload.enabled
+    if payload.allowed_tools is not None:
+        agent_cap.allowed_tools = payload.allowed_tools
+    if payload.resource_scope is not None:
+        agent_cap.resource_scope = payload.resource_scope
+    if payload.allowed_domains is not None:
+        agent_cap.allowed_domains = payload.allowed_domains
+    if payload.require_approval is not None:
+        agent_cap.require_approval = payload.require_approval
+    if payload.payment_budget is not None:
+        agent_cap.payment_budget = payload.payment_budget
+
+    # Keep agent.permissions in sync with enabled capabilities
+    enabled_caps = (
+        db.query(AgentCapability)
+        .filter(AgentCapability.agent_id == agent.id, AgentCapability.enabled == True)  # noqa: E712
+        .all()
+    )
+    agent.permissions = sorted(
+        set(
+            p
+            for ac in enabled_caps
+            for p in (ac.allowed_tools or [])
+        )
+    )
+
+    db.commit()
+    db.refresh(agent_cap)
+    return AgentCapabilityOut(
+        id=agent_cap.id,
+        organization_id=agent_cap.organization_id,
+        agent_id=agent_cap.agent_id,
+        capability_id=agent_cap.capability_id,
+        capability_key=capability.key,
+        capability_name=capability.name,
+        enabled=agent_cap.enabled,
+        allowed_tools=agent_cap.allowed_tools or [],
+        resource_scope=agent_cap.resource_scope or [],
+        allowed_domains=agent_cap.allowed_domains or [],
+        require_approval=agent_cap.require_approval,
+        payment_budget=agent_cap.payment_budget,
+        created_at=agent_cap.created_at,
+        updated_at=agent_cap.updated_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Approval queue endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/organizations/{org_id}/approvals",
+    response_model=list[ApprovalRequestOut],
+)
+def list_approval_requests(
+    org_id: str,
+    principal: Principal = Depends(require_organization_access()),
+    db: Session = Depends(get_db),
+    status_filter: Optional[str] = Query(default="pending", alias="status"),
+):
+    """List approval requests for an organization."""
+    if principal.organization_id != org_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "CROSS_TENANT_ACCESS", "message": "cannot list approvals for another organization"},
+        )
+    query = db.query(ApprovalRequest).filter(ApprovalRequest.organization_id == org_id)
+    if status_filter:
+        query = query.filter(ApprovalRequest.status == status_filter)
+    return query.order_by(ApprovalRequest.requested_at.desc()).all()
+
+
+@router.post(
+    "/approvals/{approval_id}/approve",
+    response_model=ApprovalRequestOut,
+)
+def approve_request(
+    approval_id: str,
+    payload: ApprovalActionRequest,
+    principal: Principal = Depends(get_current_principal),
+    db: Session = Depends(get_db),
+):
+    """Approve a pending approval request."""
+    approval = db.query(ApprovalRequest).filter(ApprovalRequest.id == approval_id).first()
+    if not approval:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "approval request not found"})
+    if principal.organization_id != approval.organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "CROSS_TENANT_ACCESS", "message": "cannot approve request from another organization"},
+        )
+    if approval.status != "pending":
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_STATUS", "message": f"approval request is already {approval.status}"},
+        )
+    approval.status = "approved"
+    approval.approved_by = str(principal.user_id or principal.agent_id or "system")
+    approval.approved_at = datetime.now(timezone.utc)
+    approval.reason = payload.reason
+    db.commit()
+    db.refresh(approval)
+    return approval
+
+
+@router.post(
+    "/approvals/{approval_id}/reject",
+    response_model=ApprovalRequestOut,
+)
+def reject_request(
+    approval_id: str,
+    payload: ApprovalActionRequest,
+    principal: Principal = Depends(get_current_principal),
+    db: Session = Depends(get_db),
+):
+    """Reject a pending approval request."""
+    approval = db.query(ApprovalRequest).filter(ApprovalRequest.id == approval_id).first()
+    if not approval:
+        raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "approval request not found"})
+    if principal.organization_id != approval.organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "CROSS_TENANT_ACCESS", "message": "cannot reject request from another organization"},
+        )
+    if approval.status != "pending":
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_STATUS", "message": f"approval request is already {approval.status}"},
+        )
+    approval.status = "rejected"
+    approval.approved_by = str(principal.user_id or principal.agent_id or "system")
+    approval.approved_at = datetime.now(timezone.utc)
+    approval.reason = payload.reason
+    db.commit()
+    db.refresh(approval)
+    return approval
 
 
 # ---------------------------------------------------------------------------

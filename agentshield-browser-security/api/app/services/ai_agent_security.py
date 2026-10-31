@@ -24,10 +24,12 @@ from app.db.ai_models import (
     ToolDecision,
 )
 from app.db.base import get_db_session
+from app.db.models import AgentCapability, Capability
 from app.enterprise.auth import verify_agent_credentials
 from app.security.ai.detection import ThreatDetectionEngine, DetectionResult
 from app.security.ai.dlp import DlpEngine
 from app.security.ai.risk import RiskEngine
+from app.services.capability_service import CapabilityService
 from app.services.event_broadcaster import broadcaster
 
 logger = logging.getLogger(__name__)
@@ -120,10 +122,12 @@ class AgentSecurityService:
 
         # 1. Permission governance (Part 5): check agent capabilities.
         perm_decision, perm_reason = self._check_permissions(
-            agent_permissions=agent_permissions,
+            agent=agent,
+            organization_id=organization_id,
             action=action,
             tool_name=tool_name,
             tool_args=tool_args,
+            target=target,
         )
 
         # 2. Threat detection (Part 2).
@@ -319,16 +323,42 @@ class AgentSecurityService:
     def _check_permissions(
         self,
         *,
-        agent_permissions: list[str],
+        agent: Agent,
+        organization_id: str,
         action: str,
         tool_name: str | None,
         tool_args: dict[str, Any],
+        target: str | None = None,
     ) -> tuple[str, str | None]:
-        """Map actions to required agent permissions.
+        """Map actions to required agent permissions with capability enforcement.
 
-        Returns (decision, reason). Least-privilege defaults: unknown actions
-        require explicit permission.
+        Checks agent capabilities (enabled state, allowed tools, resource scope,
+        domain restrictions, approval requirements) server-side via CapabilityService.
+        Falls back to the legacy agent.permissions JSON list when no capability
+        record exists or no database is available.
         """
+        # 1. Capability-based enforcement (server-side, persisted)
+        # Only check capabilities when a DB session is available.
+        try:
+            cap_svc = CapabilityService(db=getattr(self, "_db_context", None))
+            cap_decision = cap_svc.check_capability(
+                agent=agent,
+                organization_id=organization_id,
+                capability_key=None,
+                tool_name=tool_name,
+                target=target,
+                tool_args=tool_args,
+            )
+            if not cap_decision.allowed:
+                if cap_decision.require_approval:
+                    return "require_approval", cap_decision.reason or "capability requires human approval"
+                return "deny", cap_decision.reason or "capability check failed"
+        except RuntimeError:
+            # No database configured; fall through to legacy permission check.
+            pass
+
+        # 2. Legacy permission list check (backward compatibility)
+        agent_permissions = list(agent.permissions or [])
         required = {
             "navigate": "browser_navigation",
             "click": "page_interaction",

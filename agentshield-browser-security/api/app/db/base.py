@@ -40,12 +40,24 @@ def init_db(settings: Settings) -> None:
     database_url = settings.database_url
     if not database_url:
         raise ValueError("DATABASE_URL must be configured")
-    _engine = create_engine(
-        database_url,
-        pool_pre_ping=True,
-        pool_size=settings.database_pool_size,
-        max_overflow=settings.database_max_overflow,
-    )
+    kwargs = {"pool_pre_ping": True}
+    if database_url.startswith("sqlite"):
+        from sqlalchemy.pool import StaticPool
+        kwargs = {
+            "connect_args": {"check_same_thread": False},
+            "poolclass": StaticPool,
+        }
+    else:
+        kwargs["pool_size"] = settings.database_pool_size
+        kwargs["max_overflow"] = settings.database_max_overflow
+    _engine = create_engine(database_url, **kwargs)
+    if database_url.startswith("sqlite"):
+        from sqlalchemy import event
+        @event.listens_for(_engine, "connect")
+        def _set_sqlite_pragma(dbapi_conn, connection_record):
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
     _SessionLocal = sessionmaker(
         autocommit=False,
         autoflush=False,
@@ -79,3 +91,4 @@ def drop_all() -> None:
     if _engine is None:
         raise RuntimeError("Database not initialized. Call init_db() first.")
     Base.metadata.drop_all(bind=_engine)
+

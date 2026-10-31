@@ -20,7 +20,12 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.db.base import init_db, get_db_session
 from app.db.models import Agent, Organization, OrganizationUser, Policy, User
-from app.enterprise.auth import create_organization, create_user
+from app.enterprise.auth import (
+    create_organization,
+    create_user,
+    hash_password,
+    verify_password,
+)
 
 
 DEFAULT_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@agentshield.dev")
@@ -41,7 +46,26 @@ def seed(db: Session) -> None:
         )
         print(f"created user {DEFAULT_EMAIL}")
     else:
-        print(f"user {DEFAULT_EMAIL} already exists")
+        # Reconcile the development admin account in place. Never delete or
+        # overwrite other users, and never touch database records unrelated to
+        # this admin email. Only the password hash and active flag are updated
+        # so the advertised development credential keeps working even if the
+        # row was previously created with a stale password or deactivated.
+        needs_update = False
+        current_hash = user.password_hash
+        if not current_hash or not verify_password(DEFAULT_PASSWORD, current_hash):
+            user.password_hash = hash_password(DEFAULT_PASSWORD)
+            needs_update = True
+        if not user.is_active:
+            user.is_active = True
+            needs_update = True
+        if needs_update:
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+            print(f"reconciled user {DEFAULT_EMAIL}")
+        else:
+            print(f"user {DEFAULT_EMAIL} already exists")
 
     org = db.query(Organization).filter(Organization.slug == DEFAULT_ORG_SLUG).first()
     if org is None:
@@ -126,7 +150,6 @@ def seed(db: Session) -> None:
 
     print("seed complete")
     print(f"email: {DEFAULT_EMAIL}")
-    print(f"password: {DEFAULT_PASSWORD}")
     print(f"organization: {org.id} ({org.slug})")
     print(f"agent: {agent.agent_id}")
 

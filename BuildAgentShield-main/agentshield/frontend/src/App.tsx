@@ -26,6 +26,7 @@ import {
   LogOut,
   Menu,
   Plus,
+  Play,
   Search,
   Settings2,
   Shield,
@@ -75,8 +76,10 @@ import {
   createAgent as createAgentApi,
   createPolicy as createPolicyApi,
   downloadAudit,
+  getAgentCapabilities as getAgentCapabilitiesApi,
   getAgents as getAgentsApi,
   getApprovals as getApprovalsApi,
+  getCapabilities as getCapabilitiesApi,
   getCyberRangeScenarios as getCyberRangeScenariosApi,
   createCampaign as createCampaignApi,
   listCampaigns as listCampaignsApi,
@@ -94,6 +97,7 @@ import {
   getPolicies as getPoliciesApi,
   getQuarantine as getQuarantineApi,
   getWorkspace as getWorkspaceApi,
+  getStoredUser,
   hasStoredSession,
   login as loginApi,
   loginDemoBackend,
@@ -105,10 +109,13 @@ import {
   runSimulator as runSimulatorApi,
   triggerDownload,
   updateAgent as updateAgentApi,
+  updateAgentCapability as updateAgentCapabilityApi,
   updatePolicy as updatePolicyApi,
   updateWorkspace as updateWorkspaceApi,
   verifyAudit as verifyAuditApi,
   type AgentRecord,
+  type AgentCapabilityRecord,
+  type ApprovalRequestRecord,
   type AuditVerification,
   type OverviewStats,
   type PolicyRecord,
@@ -165,6 +172,19 @@ function errorMessage(error: unknown) {
     : "AgentShield API request failed"
 }
 
+function toApproval(record: ApprovalRequestRecord): Approval {
+  return {
+    id: record.id,
+    agent: record.requested_by || record.agent_id,
+    tool: record.tool_name,
+    summary: record.target || `Approve ${record.tool_name}`,
+    args: record.tool_args,
+    risk: 0,
+    expires: record.requested_at || "",
+    status: record.status,
+  }
+}
+
 export default function App() {
   const [page, setPage] = useState("Overview")
   const [workspaceName, setWorkspaceName] = useState("Acme workspace")
@@ -186,6 +206,7 @@ export default function App() {
   const [selectedAgent, setSelectedAgent] = useState("research-agent")
   const [permissions, setPermissions] = useState<Record<string, boolean>>({})
   const [scopes, setScopes] = useState<Record<string, string>>({})
+  const [agentCapabilities, setAgentCapabilities] = useState<Record<string, AgentCapabilityRecord>>({})
   const [filter, setFilter] = useState("All decisions")
   const [query, setQuery] = useState("")
   const [auditPage, setAuditPage] = useState(1)
@@ -235,7 +256,7 @@ export default function App() {
   const selectedAgentRecord = agents.find(
     (agent) => agent.name === selectedAgent,
   )
-  const activeScenarios = backendMode ? attackScenarios : demoScenarios
+  const activeScenarios = backendMode ? (cyberRangeScenarios.length > 0 ? cyberRangeScenarios : attackScenarios) : demoScenarios
   function notify(message: string) {
     setToast(message)
     clearTimeout(toastTimer.current)
@@ -282,7 +303,7 @@ export default function App() {
     if (!agentList.some((agent) => agent.name === selectedAgent)) {
       setSelectedAgent(agentList[0]?.name || "research-agent")
     }
-    setApprovals(approvalList)
+    setApprovals(approvalList.map(toApproval))
     setEvents(auditResult.items)
     setPolicies(policyList)
     setQuarantined(
@@ -347,6 +368,13 @@ export default function App() {
       cancelled = true
     }
   }, [])
+  useEffect(() => {
+    if (!backendMode) return
+    const agent = agents.find((a) => a.name === selectedAgent)
+    if (agent) {
+      loadAgentCapabilities(agent.id)
+    }
+  }, [selectedAgent, backendMode, agents])
   useEffect(() => {
     if (!backendMode) {
       setStats(null)
@@ -418,7 +446,7 @@ export default function App() {
           getApprovalsApi(),
           getAuditApi(),
         ])
-        setApprovals(approvalList)
+        setApprovals(approvalList.map(toApproval))
         setEvents(auditResult.items)
         setSelectedApproval(null)
         setComment("")
@@ -538,12 +566,33 @@ export default function App() {
   function capabilityEnabled(key: string, index: number) {
     const stateKey = `${selectedAgent}:${key}`
     if (permissions[stateKey] !== undefined) return permissions[stateKey]
-    if (backendMode && selectedAgentRecord?.permissions) {
-      return capabilityPermissions[key].every((permission) =>
-        selectedAgentRecord.permissions!.includes(permission),
+    if (backendMode) {
+      const cap = Object.values(agentCapabilities).find(
+        (c) => c.capability_key === key && c.agent_id === selectedAgentRecord?.id,
       )
+      if (cap) return cap.enabled
+      if (selectedAgentRecord?.permissions) {
+        return capabilityPermissions[key].every((permission) =>
+          selectedAgentRecord.permissions!.includes(permission),
+        )
+      }
     }
     return [0, 1, 5, 7].includes(index)
+  }
+  async function loadAgentCapabilities(agentId: string) {
+    if (!backendMode) return
+    try {
+      const caps = await getAgentCapabilitiesApi(agentId)
+      const byKey: Record<string, AgentCapabilityRecord> = {}
+      for (const c of caps) {
+        byKey[c.capability_key || c.id] = c
+        const stateKey = `${selectedAgent}:${c.capability_key || c.id}`
+        setPermissions((old) => ({ ...old, [stateKey]: c.enabled }))
+      }
+      setAgentCapabilities(byKey)
+    } catch (error) {
+      notify(errorMessage(error))
+    }
   }
   async function saveCapability(
     capabilityKey: string,
@@ -556,23 +605,30 @@ export default function App() {
       `${capabilityName} ${enabled ? "enabled" : "disabled"} for ${selectedAgent}.`,
     )
     if (!backendMode || !selectedAgentRecord) return
-    const required = capabilityPermissions[capabilityKey]
-    const current = selectedAgentRecord.permissions || []
-    const next = enabled
-      ? Array.from(new Set([...current, ...required]))
-      : current.filter((permission) => !required.includes(permission))
     try {
-      const updated = await updateAgentApi(selectedAgentRecord.id, {
-        permissions: next,
-      })
+      const updated = await updateAgentCapabilityApi(
+        selectedAgentRecord.id,
+        capabilityKey,
+        { enabled },
+      )
+      setAgentCapabilities((old) => ({
+        ...old,
+        [capabilityKey]: {
+          ...old[capabilityKey],
+          ...updated,
+        },
+      }))
       setAgents((old) =>
         old.map((agent) =>
-          agent.id === updated.id
+          agent.id === selectedAgentRecord.id
             ? {
                 ...agent,
-                ...updated,
-                color: agent.color,
-                initials: agent.initials,
+                permissions: updated.allowed_tools,
+                scopes: {
+                  ...agent.scopes,
+                  allowed_domains: updated.allowed_domains,
+                  resource_scope: updated.resource_scope,
+                },
               }
             : agent,
         ),
@@ -1486,122 +1542,240 @@ export default function App() {
                   </div>
                 </Panel>
               )}
-              {page === "Attack Simulator" && (
+{page === "Attack Simulator" && (
                 <>
                   <div className="simulator-notice">
                     <span className="integration-icon violet">
                       <FlaskConical size={23} />
                     </span>
                     <div>
-                      <h3>A safe place to break things.</h3>
+                      <h3>Cyber Range — Live Attack Simulation</h3>
                       <p>
                         {backendMode
-                          ? "These scenarios run through the real gateway with mock adapters. No host files are read, emails sent, or payments made."
-                          : "These scenarios run through a local demo evaluator. No files are read, emails sent, or payments made."}
+                          ? "Seven isolated attack scenarios execute against real local targets. AgentShield enforcement is exercised in real time."
+                          : "Connect backend to run live cyber range simulations."}
                       </p>
                     </div>
-                    <Badge tone="violet">SANDBOX</Badge>
+                    <Badge tone="violet">LIVE CYBER RANGE</Badge>
                   </div>
-                  <div className="summary-strip">
-                    <div>
-                      <FlaskConical size={17} />
-                      <strong>{activeScenarios.length}</strong>Attack scenarios
-                    </div>
-                    <div>
-                      <Check size={17} />
-                      <strong>
-                        {
-                          Object.entries(results).filter(
-                            ([id, r]) => {
-                              const scenario = activeScenarios.find((s) => s.id === id)
-                              const expected = backendMode ? undefined : (scenario as typeof demoScenarios[number] | undefined)?.expected
-                              return expected !== undefined && r.decision === expected && !r.executed
-                            },
-                          ).length
-                        }
-                      </strong>
-                      Passed
-                    </div>
-                    <div>
-                      <ShieldCheck size={17} />
-                      <strong>0</strong>Real tool executions
-                    </div>
-                    {Object.keys(results).length > 0 && (
-                      <Button
-                        variant="compact"
-                        onClick={() =>
-                          exportFile(
-                            "attack-results.json",
-                            JSON.stringify(
-                              { mode: "local-demo", results },
-                              null,
-                              2,
-                            ),
-                          )
-                        }
-                      >
-                        <ArrowDownToLine size={13} />
-                        Export results
-                      </Button>
-                    )}
-                  </div>
-                  <div className="scenario-grid">
-                    {activeScenarios.map((s, i) => {
-                      const isDemo = !backendMode
-                      const expected = isDemo ? (s as typeof demoScenarios[number]).expected : undefined
-                      const category = isDemo ? (s as typeof demoScenarios[number]).category : s.category
-                      return (
-                        <div className="panel scenario-card" key={s.id}>
-                          <div className="scenario-top">
-                            <span className="scenario-number">
-                              {String(i + 1).padStart(2, "0")}
-                            </span>
-                            <Badge
-                              tone={
-                                results[s.id]
-                                  ? results[s.id].decision === expected
-                                    ? "green"
-                                    : "red"
-                                  : "neutral"
-                              }
-                            >
-                              {results[s.id]
-                                ? results[s.id].decision === expected
-                                  ? "Passed"
-                                  : "Failed"
-                                : category}
-                            </Badge>
-                          </div>
-                          <h3>{s.name}</h3>
-                          <p>{s.description}</p>
-                          {isDemo && expected && (
-                            <div className="scenario-expected">
-                              <span>Expected outcome</span>
-                              <Badge tone={toneFor(expected)}>{expected}</Badge>
-                            </div>
-                          )}
-                          {results[s.id] && (
-                            <div className="scenario-result">
-                              <ShieldCheck size={14} />
-                              <span>
-                                {results[s.id].reason}
-                                <br />
-                                <strong>Executed: no</strong>
-                              </span>
-                            </div>
-                          )}
-                          <Button
-                            disabled={running}
-                            onClick={() => runSimulation([s.id])}
-                          >
-                            <FlaskConical size={14} />
-                            {results[s.id] ? "Run again" : "Run scenario"}
-                            <ArrowUpRight size={13} />
-                          </Button>
+
+                  {backendMode && cyberRangeScenarios.length > 0 ? (
+                    <>
+                      <div className="summary-strip">
+                        <div>
+                          <FlaskConical size={17} />
+                          <strong>{cyberRangeScenarios.length}</strong> Scenarios
                         </div>
-                      )
-                    })}
-                  </div>
+                        <div>
+                          <Globe size={17} />
+                          <strong>{campaigns.filter(c => c.status === 'RUNNING').length}</strong> Active campaigns
+                        </div>
+                        <div>
+                          <CheckCheck size={17} />
+                          <strong>{campaigns.filter(c => c.status === 'COMPLETED').length}</strong> Completed
+                        </div>
+                        <div>
+                          <AlertCircle size={17} />
+                          <strong>{campaigns.filter(c => c.status === 'FAILED').length}</strong> Failed
+                        </div>
+                      </div>
+
+                      <div className="toolbar">
+                        <div>
+                          <label className="inline-label">CAMPAIGN</label>
+                          <Select
+                            label="Select campaign"
+                            value={selectedCampaign?.id || ""}
+                            onChange={(id) => {
+                              const camp = campaigns.find(c => c.id === id)
+                              if (camp) {
+                                setSelectedCampaign(camp)
+                                setCampaignSimulations(camp.scenario_ids.map((sid: string) => ({ scenario_id: sid, target_id: '', status: 'QUEUED' })))
+                              }
+                            }}
+                            options={["", ...campaigns.map(c => c.id)]}
+                          />
+                        </div>
+                        {selectedCampaign && (
+                          <Button variant="primary" onClick={() => {
+                            setLiveExecutionOpen(true)
+                          }}>
+                            <Play size={16} />
+                            View Live Execution
+                          </Button>
+                        )}
+                        <Button variant="primary" onClick={() => setCreatingCampaign(true)}>
+                          <Plus size={16} />
+                          New Campaign
+                        </Button>
+                      </div>
+
+                      {creatingCampaign && (
+                        <Modal title="Create Campaign" onClose={() => setCreatingCampaign(false)} wide>
+                          <div className="campaign-form">
+                            <label className="form-label">
+                              Campaign name
+                              <input
+                                value={newCampaignName}
+                                onChange={(e) => setNewCampaignName(e.target.value)}
+                                placeholder="e.g. Full Security Assessment"
+                              />
+                            </label>
+                            <label className="form-label">
+                              Policy version
+                              <input
+                                value="default"
+                                disabled
+                                className="disabled-input"
+                              />
+                            </label>
+                            <label className="form-label">
+                              Execution mode
+                              <Select
+                                label="Mode"
+                                value="sequential"
+                                onChange={() => {}}
+                                options={["sequential", "parallel"]}
+                              />
+                            </label>
+                            <div className="scenario-checkboxes">
+                              <h4>Select scenarios</h4>
+                              {cyberRangeScenarios.map((s: any) => (
+                                <label key={s.scenario_id} className="checkbox-label">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedScenarios.includes(s.scenario_id)}
+                                    onChange={(e) => {
+                                      if (e.target.checked) {
+                                        setSelectedScenarios([...selectedScenarios, s.scenario_id])
+                                      } else {
+                                        setSelectedScenarios(selectedScenarios.filter(id => id !== s.scenario_id))
+                                      }
+                                    }}
+                                  />
+                                  <span>{s.name}</span>
+                                  <Badge tone="violet">{s.risk_category}</Badge>
+                                </label>
+                              ))}
+                            </div>
+                            <div className="modal-actions">
+                              <Button onClick={() => { setCreatingCampaign(false); setNewCampaignName(""); setSelectedScenarios([]); }}>Cancel</Button>
+                              <Button variant="primary" onClick={async () => {
+                                if (!newCampaignName.trim() || selectedScenarios.length === 0) return
+                                try {
+                                  const user = getStoredUser()
+                                  const orgId = user?.tenant_id || ""
+                                  const camp = await createCampaignApi({
+                                    organization_id: orgId,
+                                    user_id: user?.id || "",
+                                    name: newCampaignName.trim(),
+                                    description: `Campaign with ${selectedScenarios.length} scenarios`,
+                                    policy_version: "default",
+                                    scenario_ids: selectedScenarios,
+                                    execution_mode: "sequential",
+                                    max_concurrency: 1,
+                                  })
+                                  setCampaigns((prev: any[]) => [camp, ...prev])
+                                  setCreatingCampaign(false)
+                                  setNewCampaignName("")
+                                  setSelectedScenarios([])
+                                  notify("Campaign created")
+                                } catch (e: any) {
+                                  notify(e.message || "Failed to create campaign")
+                                }
+                              }}>
+                                Create Campaign
+                              </Button>
+                            </div>
+                          </div>
+                        </Modal>
+                      )}
+
+                      <div className="campaign-list">
+                        {campaigns.length === 0 ? (
+                          <Empty icon={FlaskConical} title="No campaigns yet" detail="Create a campaign to run attack simulations" />
+                        ) : (
+                          campaigns.map((camp: any) => (
+                            <div key={camp.id} className="panel campaign-card">
+                              <div className="campaign-header">
+                                <div>
+                                  <h3>{camp.name}</h3>
+                                  <p className="muted">{camp.scenario_ids.length} scenarios · {camp.execution_mode} · Policy: {camp.policy_version}</p>
+                                </div>
+                                <div className="campaign-status">
+                                  <Badge tone={
+                                    camp.status === 'COMPLETED' ? 'green' :
+                                    camp.status === 'FAILED' ? 'red' :
+                                    camp.status === 'RUNNING' ? 'violet' :
+                                    camp.status === 'CANCELLED' ? 'amber' : 'neutral'
+                                  }>
+                                    {camp.status}
+                                  </Badge>
+                                </div>
+                              </div>
+                              <div className="campaign-actions">
+                                <Button variant="compact" onClick={() => {
+                                  setSelectedCampaign(camp)
+                                  setCampaignSimulations(camp.scenario_ids.map((sid: string) => ({ scenario_id: sid, target_id: '', status: 'QUEUED' })))
+                                  setLiveExecutionOpen(true)
+                                }}>
+                                  <Play size={14} />
+                                  {camp.status === 'RUNNING' ? 'Watch Live' : 'Run / View'}
+                                </Button>
+                                {['QUEUED', 'INITIALIZING', 'RUNNING'].includes(camp.status) && (
+                                  <Button variant="danger compact" onClick={async () => {
+                                    await cancelCampaignApi(camp.id)
+                                    setCampaigns(campaigns.map((c: any) => c.id === camp.id ? { ...c, status: 'CANCELLED' } : c))
+                                    notify("Campaign cancelled")
+                                  }}>
+                                    <X size={14} />
+                                    Cancel
+                                  </Button>
+                                )}
+                                <Button variant="compact" onClick={async () => {
+                                  const report = await getCampaignReportApi(camp.id)
+                                  setCampaignReport(report)
+                                  setReportViewerOpen(true)
+                                }}>
+                                  <FileText size={14} />
+                                  Report
+                                </Button>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="notice">
+                      <HelpCircle size={17} />
+                      <span>Connect to backend and start Docker cyber range to enable live simulations.</span>
+                    </div>
+                  )}
+
+                  {liveExecutionOpen && selectedCampaign && (
+                    <LiveExecution
+                      campaignId={selectedCampaign.id}
+                      campaignName={selectedCampaign.name}
+                      simulations={campaignSimulations}
+                      onCancel={() => setLiveExecutionOpen(false)}
+                      onClose={() => setLiveExecutionOpen(false)}
+                    />
+                  )}
+
+                  {evidenceExplorerOpen && evidenceSimulationId && (
+                    <EvidenceExplorer
+                      simulationId={evidenceSimulationId}
+                      onClose={() => { setEvidenceExplorerOpen(false); setEvidenceSimulationId(null); }}
+                    />
+                  )}
+
+                  {reportViewerOpen && campaignReport && (
+                    <ReportViewer
+                      report={campaignReport}
+                      onClose={() => { setReportViewerOpen(false); setCampaignReport(null); }}
+                    />
+                  )}
                 </>
               )}
               {page === "Quarantine" && (
@@ -2172,68 +2346,93 @@ export default function App() {
                 Configure {modal.replace("Configure ", "").toLowerCase()} for{" "}
                 <strong>{selectedAgent}</strong>.
               </p>
-              <label className="form-label">
-                Resource scope
-                <input
-                  value={
-                    scopes[`${selectedAgent}:${modal}:scope`] ?? "/workspace/**"
-                  }
-                  onChange={(e) =>
-                    setScopes((old) => ({
-                      ...old,
-                      [`${selectedAgent}:${modal}:scope`]: e.target.value,
-                    }))
-                  }
-                />
-              </label>
-              <label className="form-label">
-                Allowed domains / merchants
-                <input
-                  value={
-                    scopes[`${selectedAgent}:${modal}:domains`] ??
-                    "acme.example, docs.example"
-                  }
-                  onChange={(e) =>
-                    setScopes((old) => ({
-                      ...old,
-                      [`${selectedAgent}:${modal}:domains`]: e.target.value,
-                    }))
-                  }
-                />
-              </label>
-              {modal.includes("Payments") && (
-                <label className="form-label">
-                  Maximum transaction amount (USD)
-                  <input
-                    type="number"
-                    min="0"
-                    value={scopes[`${selectedAgent}:${modal}:budget`] ?? "500"}
-                    onChange={(e) =>
-                      setScopes((old) => ({
-                        ...old,
-                        [`${selectedAgent}:${modal}:budget`]: e.target.value,
-                      }))
-                    }
-                  />
-                </label>
-              )}
-              <div className="setting-toggle">
-                <span>Require human approval</span>
-                <Toggle
-                  label="Require human approval"
-                  checked={
-                    permissions[`${selectedAgent}:${modal}:approval`] ?? true
-                  }
-                  onChange={() =>
-                    setPermissions((old) => ({
-                      ...old,
-                      [`${selectedAgent}:${modal}:approval`]: !(
-                        old[`${selectedAgent}:${modal}:approval`] ?? true
-                      ),
-                    }))
-                  }
-                />
-              </div>
+              {(() => {
+                const capabilityName = modal.replace("Configure ", "")
+                const capDef = capabilities.find((c) => c.name === capabilityName)
+                const capabilityKey = capDef?.key || capabilityName.toLowerCase().replace(" ", "_")
+                const currentCap = backendMode
+                  ? Object.values(agentCapabilities).find(
+                      (c) => c.capability_key === capabilityKey && c.agent_id === selectedAgentRecord?.id,
+                    )
+                  : null
+                return (
+                  <>
+                    <label className="form-label">
+                      Resource scope
+                      <input
+                        value={
+                          backendMode && currentCap
+                            ? (currentCap.resource_scope || ["/workspace/**"]).join(", ")
+                            : scopes[`${selectedAgent}:${modal}:scope`] ?? "/workspace/**"
+                        }
+                        onChange={(e) =>
+                          setScopes((old) => ({
+                            ...old,
+                            [`${selectedAgent}:${modal}:scope`]: e.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label className="form-label">
+                      Allowed domains / merchants
+                      <input
+                        value={
+                          backendMode && currentCap
+                            ? (currentCap.allowed_domains || []).join(", ")
+                            : scopes[`${selectedAgent}:${modal}:domains`] ?? "acme.example, docs.example"
+                        }
+                        onChange={(e) =>
+                          setScopes((old) => ({
+                            ...old,
+                            [`${selectedAgent}:${modal}:domains`]: e.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    {modal.includes("Payments") && (
+                      <label className="form-label">
+                        Maximum transaction amount (USD)
+                        <input
+                          type="number"
+                          min="0"
+                          value={
+                            backendMode && currentCap
+                              ? currentCap.payment_budget ?? 500
+                              : Number(
+                                  scopes[`${selectedAgent}:${modal}:budget`] ?? "500",
+                                )
+                          }
+                          onChange={(e) =>
+                            setScopes((old) => ({
+                              ...old,
+                              [`${selectedAgent}:${modal}:budget`]: e.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                    )}
+                    <div className="setting-toggle">
+                      <span>Require human approval</span>
+                      <Toggle
+                        label="Require human approval"
+                        checked={
+                          backendMode && currentCap
+                            ? currentCap.require_approval
+                            : permissions[`${selectedAgent}:${modal}:approval`] ?? true
+                        }
+                        onChange={() =>
+                          setPermissions((old) => ({
+                            ...old,
+                            [`${selectedAgent}:${modal}:approval`]: !(
+                              old[`${selectedAgent}:${modal}:approval`] ?? true
+                            ),
+                          }))
+                        }
+                      />
+                    </div>
+                  </>
+                )
+              })()}
               <div className="modal-actions">
                 <Button onClick={() => setModal(null)}>Close</Button>
                 <Button
@@ -2244,15 +2443,24 @@ export default function App() {
                       notify("Demo restrictions saved for this session.")
                       return
                     }
+                    const capabilityName = modal.replace("Configure ", "")
+                    const capDef = capabilities.find((c) => c.name === capabilityName)
+                    const capabilityKey = capDef?.key || capabilityName.toLowerCase().replace(" ", "_")
                     const pathValue =
                       scopes[`${selectedAgent}:${modal}:scope`] ??
                       "/workspace/**"
                     const domainValue =
                       scopes[`${selectedAgent}:${modal}:domains`] ??
                       "acme.example, docs.example"
-                    const nextScopes: Record<string, unknown> = {
-                      ...(selectedAgentRecord.scopes || {}),
-                      allowed_paths: pathValue
+                    const updatePayload: {
+                      enabled?: boolean
+                      allowed_tools?: string[]
+                      resource_scope?: string[]
+                      allowed_domains?: string[]
+                      require_approval?: boolean
+                      payment_budget?: number
+                    } = {
+                      resource_scope: pathValue
                         .split(",")
                         .map((item) => item.trim())
                         .filter(Boolean),
@@ -2262,23 +2470,37 @@ export default function App() {
                         .filter(Boolean),
                     }
                     if (modal.includes("Payments")) {
-                      nextScopes.payment_budget = Number(
+                      updatePayload.payment_budget = Number(
                         scopes[`${selectedAgent}:${modal}:budget`] ?? "500",
                       )
                     }
+                    const approvalChecked =
+                      permissions[`${selectedAgent}:${modal}:approval`] ?? true
+                    updatePayload.require_approval = approvalChecked
                     try {
-                      const updated = await updateAgentApi(
+                      const updated = await updateAgentCapabilityApi(
                         selectedAgentRecord.id,
-                        { scopes: nextScopes },
+                        capabilityKey,
+                        updatePayload,
                       )
+                      setAgentCapabilities((old) => ({
+                        ...old,
+                        [capabilityKey]: {
+                          ...old[capabilityKey],
+                          ...updated,
+                        },
+                      }))
                       setAgents((old) =>
                         old.map((agent) =>
-                          agent.id === updated.id
+                          agent.id === selectedAgentRecord.id
                             ? {
                                 ...agent,
-                                ...updated,
-                                color: agent.color,
-                                initials: agent.initials,
+                                permissions: updated.allowed_tools,
+                                scopes: {
+                                  ...agent.scopes,
+                                  allowed_domains: updated.allowed_domains,
+                                  resource_scope: updated.resource_scope,
+                                },
                               }
                             : agent,
                         ),

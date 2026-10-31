@@ -238,6 +238,8 @@ function buildLaunchOptions() {
     "--use-mock-keychain",
     "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
     "--webrtc-ip-handling-policy=disable_non_proxied_udp",
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
   ];
 
   if (!config.allowWebrtc) {

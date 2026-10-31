@@ -17,7 +17,7 @@ from typing import Any, Optional
 
 import httpx
 import structlog
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Request, status, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
@@ -34,7 +34,7 @@ from sqlalchemy import (
     create_engine,
     select,
 )
-from sqlalchemy.dialects.postgresql import UUID as PGUUID
+
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -111,13 +111,13 @@ class Campaign(Base):
     __tablename__ = "simulation_campaigns"
 
     id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
     organization_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), index=True
+        String(36), index=True
     )
     user_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), index=True
+        String(36), index=True
     )
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -131,6 +131,8 @@ class Campaign(Base):
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     simulations: Mapped[list["Simulation"]] = relationship(
         "Simulation", back_populates="campaign", cascade="all, delete-orphan"
@@ -149,13 +151,13 @@ class Simulation(Base):
     __tablename__ = "simulations"
 
     id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
     campaign_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=False), ForeignKey("simulation_campaigns.id", ondelete="CASCADE"), index=True
+        String(36), ForeignKey("simulation_campaigns.id", ondelete="CASCADE"), index=True
     )
     organization_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), index=True
+        String(36), index=True
     )
     scenario_id: Mapped[str] = mapped_column(String(100), index=True)
     target_id: Mapped[str] = mapped_column(String(100))
@@ -168,12 +170,14 @@ class Simulation(Base):
     policy_version: Mapped[str] = mapped_column(String(100))
     browser_session_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     agent_id: Mapped[Optional[str]] = mapped_column(
-        PGUUID(as_uuid=False), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True
+        String(36), nullable=True
     )
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     agent_shield_decision: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     proxy_decision: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
 
     campaign: Mapped["Campaign"] = relationship("Campaign", back_populates="simulations")
@@ -194,10 +198,10 @@ class SimulationEvidence(Base):
     __tablename__ = "simulation_evidence"
 
     id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
     simulation_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=False), ForeignKey("simulations.id", ondelete="CASCADE"), index=True
+        String(36), ForeignKey("simulations.id", ondelete="CASCADE"), index=True
     )
     evidence_type: Mapped[str] = mapped_column(String(50), index=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -211,10 +215,10 @@ class CampaignEvent(Base):
     __tablename__ = "campaign_events"
 
     id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
     campaign_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=False), ForeignKey("simulation_campaigns.id", ondelete="CASCADE"), index=True
+        String(36), ForeignKey("simulation_campaigns.id", ondelete="CASCADE"), index=True
     )
     event_type: Mapped[str] = mapped_column(String(50), index=True)
     message: Mapped[str] = mapped_column(Text)
@@ -228,10 +232,10 @@ class SimulationEvent(Base):
     __tablename__ = "simulation_events"
 
     id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
     simulation_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=False), ForeignKey("simulations.id", ondelete="CASCADE"), index=True
+        String(36), ForeignKey("simulations.id", ondelete="CASCADE"), index=True
     )
     stage: Mapped[str] = mapped_column(String(50))
     message: Mapped[str] = mapped_column(Text)
@@ -241,7 +245,11 @@ class SimulationEvent(Base):
     simulation: Mapped["Simulation"] = relationship("Simulation", back_populates="events")
 
 
-engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True, pool_size=10, max_overflow=20)
+_db_url = settings.DATABASE_URL
+if _db_url.startswith("sqlite"):
+    engine = create_engine(_db_url, connect_args={"check_same_thread": False})
+else:
+    engine = create_engine(_db_url, pool_pre_ping=True, pool_size=10, max_overflow=20)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
@@ -415,17 +423,41 @@ async def health():
     return {"status": "healthy", "service": "simulation-controller"}
 
 
-@app.get("/v1/simulations/scenarios", response_model=list[ScenarioInfo])
-async def list_scenarios():
+SERVICE_HEALTH_PORTS = {
+    "prompt-injection-target": 8081,
+    "phishing-target": 8082,
+    "ssrf-target": 8083,
+    "malicious-download-target": 8084,
+    "resource-exhaustion-target": 8085,
+    "dns-rebinding-target": 8086,
+    "data-exfiltration-sink": 8087,
+    "mock-metadata": 8088,
+    "browser-worker": 8080,
+    "egress-proxy": 9090,
+}
+
+SERVICE_HEALTH_PATHS = {
+    "browser-worker": "/health/ready",
+    "egress-proxy": "/health/ready",
+}
+
+
+@app.get("/v1/simulations/scenarios")
+async def list_scenarios() -> list[ScenarioInfo]:
     results = []
     for scenario_id, config in SCENARIOS.items():
         available = True
         for svc in config.required_services:
             try:
-                async with httpx.AsyncClient(timeout=2.0) as client:
+                async with httpx.AsyncClient(timeout=5.0) as client:
                     if svc == "mock-metadata":
                         continue
-                    resp = await client.get(f"http://{svc}:8081/health")
+                    port = SERVICE_HEALTH_PORTS.get(svc)
+                    if port is None:
+                        available = False
+                        break
+                    path = SERVICE_HEALTH_PATHS.get(svc, "/health")
+                    resp = await client.get(f"http://{svc}:{port}{path}")
                     if resp.status_code != 200:
                         available = False
                         break
@@ -462,8 +494,8 @@ async def get_scenario(scenario_id: str):
     )
 
 
-@app.post("/v1/simulations/campaigns", response_model=CampaignResponse, status_code=201)
-async def create_campaign(request: CampaignCreateRequest, db: Session = next(get_db())):
+@app.post("/v1/simulations/campaigns", status_code=201)
+async def create_campaign(request: CampaignCreateRequest, db: Session = Depends(get_db)) -> CampaignResponse:
     for sid in request.scenario_ids:
         if sid not in SCENARIOS:
             raise HTTPException(status_code=400, detail=f"Unknown scenario: {sid}")
@@ -502,10 +534,10 @@ async def create_campaign(request: CampaignCreateRequest, db: Session = next(get
     )
 
 
-@app.get("/v1/simulations/campaigns", response_model=list[CampaignResponse])
+@app.get("/v1/simulations/campaigns")
 async def list_campaigns(
-    organization_id: str, db: Session = next(get_db()), limit: int = 100, offset: int = 0
-):
+    organization_id: str, db: Session = Depends(get_db), limit: int = 100, offset: int = 0
+) -> list[CampaignResponse]:
     campaigns = (
         db.query(Campaign)
         .filter(Campaign.organization_id == organization_id)
@@ -535,8 +567,8 @@ async def list_campaigns(
     ]
 
 
-@app.get("/v1/simulations/campaigns/{campaign_id}", response_model=CampaignResponse)
-async def get_campaign(campaign_id: str, db: Session = next(get_db())):
+@app.get("/v1/simulations/campaigns/{campaign_id}")
+async def get_campaign(campaign_id: str, db: Session = Depends(get_db)) -> CampaignResponse:
     campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
@@ -559,7 +591,7 @@ async def get_campaign(campaign_id: str, db: Session = next(get_db())):
 
 
 @app.post("/v1/simulations/campaigns/{campaign_id}/cancel")
-async def cancel_campaign(campaign_id: str, db: Session = next(get_db())):
+async def cancel_campaign(campaign_id: str, db: Session = Depends(get_db)):
     campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
@@ -608,8 +640,8 @@ async def stream_campaign_events(campaign_id: str, request: Request):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-@app.get("/v1/simulations/{simulation_id}", response_model=SimulationResponse)
-async def get_simulation(simulation_id: str, db: Session = next(get_db())):
+@app.get("/v1/simulations/{simulation_id}")
+async def get_simulation(simulation_id: str, db: Session = Depends(get_db)) -> SimulationResponse:
     sim = db.query(Simulation).filter(Simulation.id == simulation_id).first()
     if not sim:
         raise HTTPException(status_code=404, detail="Simulation not found")
@@ -634,7 +666,7 @@ async def get_simulation(simulation_id: str, db: Session = next(get_db())):
 
 
 @app.get("/v1/simulations/{simulation_id}/evidence")
-async def get_simulation_evidence(simulation_id: str, db: Session = next(get_db())):
+async def get_simulation_evidence(simulation_id: str, db: Session = Depends(get_db)):
     sim = db.query(Simulation).filter(Simulation.id == simulation_id).first()
     if not sim:
         raise HTTPException(status_code=404, detail="Simulation not found")
@@ -676,7 +708,7 @@ async def stream_simulation_events(simulation_id: str, request: Request):
 
 
 @app.get("/v1/simulations/campaigns/{campaign_id}/report")
-async def get_campaign_report(campaign_id: str, db: Session = next(get_db())):
+async def get_campaign_report(campaign_id: str, db: Session = Depends(get_db)):
     campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")

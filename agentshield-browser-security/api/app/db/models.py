@@ -16,7 +16,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Index,
 )
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy import JSON
 from sqlalchemy.orm import relationship
 
 from app.db.base import Base
@@ -35,25 +35,23 @@ class TimestampMixin:
         DateTime(timezone=True),
         nullable=False,
         default=utc_now,
-        server_default="now()",
     )
     updated_at = Column(
         DateTime(timezone=True),
         nullable=False,
         default=utc_now,
         onupdate=utc_now,
-        server_default="now()",
     )
 
 
 class Organization(Base, TimestampMixin):
     __tablename__ = "organizations"
 
-    id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     name = Column(String(255), nullable=False, unique=True, index=True)
     slug = Column(String(255), nullable=False, unique=True, index=True)
     is_active = Column(Boolean, nullable=False, default=True)
-    settings = Column(JSONB, nullable=True)
+    settings = Column(JSON, nullable=True)
 
     users = relationship("OrganizationUser", back_populates="organization")
     agents = relationship("Agent", back_populates="organization")
@@ -68,7 +66,7 @@ class Organization(Base, TimestampMixin):
 class User(Base, TimestampMixin):
     __tablename__ = "users"
 
-    id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     email = Column(String(255), nullable=False, unique=True, index=True)
     email_verified = Column(Boolean, nullable=False, default=False)
     password_hash = Column(String(255), nullable=True)
@@ -86,15 +84,15 @@ class User(Base, TimestampMixin):
 class OrganizationUser(Base, TimestampMixin):
     __tablename__ = "organization_users"
 
-    id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     organization_id = Column(
-        UUID(as_uuid=False),
+        String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     user_id = Column(
-        UUID(as_uuid=False),
+        String(36),
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -114,10 +112,10 @@ class OrganizationUser(Base, TimestampMixin):
 class Role(Base, TimestampMixin):
     __tablename__ = "roles"
 
-    id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     name = Column(String(50), nullable=False, unique=True, index=True)
     description = Column(Text, nullable=True)
-    permissions = Column(JSONB, nullable=False, default=list)
+    permissions = Column(JSON, nullable=False, default=list)
     is_system = Column(Boolean, nullable=False, default=False)
 
     __table_args__ = ()
@@ -126,7 +124,7 @@ class Role(Base, TimestampMixin):
 class Permission(Base, TimestampMixin):
     __tablename__ = "permissions"
 
-    id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     name = Column(String(100), nullable=False, unique=True, index=True)
     resource = Column(String(100), nullable=False, index=True)
     action = Column(String(50), nullable=False, index=True)
@@ -141,9 +139,9 @@ class Permission(Base, TimestampMixin):
 class Agent(Base, TimestampMixin):
     __tablename__ = "agents"
 
-    id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     organization_id = Column(
-        UUID(as_uuid=False),
+        String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -152,10 +150,11 @@ class Agent(Base, TimestampMixin):
     agent_id = Column(String(255), nullable=False, unique=True, index=True)
     status = Column(String(50), nullable=False, default="active")
     credentials_hash = Column(String(255), nullable=True)
-    permissions = Column(JSONB, nullable=False, default=list)
+    permissions = Column(JSON, nullable=False, default=list)
+    scopes = Column(JSON, nullable=True)
     last_activity_at = Column(DateTime(timezone=True), nullable=True)
     created_by_user_id = Column(
-        UUID(as_uuid=False),
+        String(36),
         ForeignKey("users.id"),
         nullable=True,
     )
@@ -163,24 +162,138 @@ class Agent(Base, TimestampMixin):
     organization = relationship("Organization", back_populates="agents")
     sessions = relationship("BrowserSession", back_populates="agent")
     creator = relationship("User")
+    capabilities = relationship("AgentCapability", back_populates="agent", cascade="all, delete-orphan")
 
     __table_args__ = (
         Index("ix_agents_org_status", "organization_id", "status"),
     )
 
 
+class Capability(Base, TimestampMixin):
+    """A named, organization-scoped capability (e.g. "terminal", "browser")."""
+
+    __tablename__ = "capabilities"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    organization_id = Column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    key = Column(String(100), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    tools = Column(JSON, nullable=False, default=list)
+    is_system = Column(Boolean, nullable=False, default=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+
+    organization = relationship("Organization")
+    agent_capabilities = relationship(
+        "AgentCapability", back_populates="capability", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "key", name="uq_capability_org_key"
+        ),
+        Index("ix_capabilities_org_key", "organization_id", "key"),
+    )
+
+
+class AgentCapability(Base, TimestampMixin):
+    """Agent-scoped capability configuration: enabled state, allowed tools, scope, domains, approval."""
+
+    __tablename__ = "agent_capabilities"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    organization_id = Column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    agent_id = Column(
+        String(36),
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    capability_id = Column(
+        String(36),
+        ForeignKey("capabilities.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    enabled = Column(Boolean, nullable=False, default=False)
+    allowed_tools = Column(JSON, nullable=False, default=list)
+    resource_scope = Column(JSON, nullable=False, default=list)
+    allowed_domains = Column(JSON, nullable=False, default=list)
+    require_approval = Column(Boolean, nullable=False, default=False)
+    payment_budget = Column(Integer, nullable=True)
+
+    organization = relationship("Organization")
+    agent = relationship("Agent", back_populates="capabilities")
+    capability = relationship("Capability", back_populates="agent_capabilities")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "agent_id", "capability_id", name="uq_agent_capability"
+        ),
+    )
+
+
+class ApprovalRequest(Base, TimestampMixin):
+    """Human approval request for a capability tool invocation."""
+
+    __tablename__ = "approval_requests"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    organization_id = Column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    agent_id = Column(
+        String(36),
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    capability_id = Column(
+        String(36),
+        ForeignKey("capabilities.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    tool_name = Column(String(100), nullable=False, index=True)
+    tool_args = Column(JSON, nullable=False, default=dict)
+    target = Column(String(500), nullable=True)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    requested_by = Column(String(255), nullable=True)
+    approved_by = Column(String(255), nullable=True)
+    requested_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    reason = Column(Text, nullable=True)
+
+    organization = relationship("Organization")
+    agent = relationship("Agent")
+    capability = relationship("Capability")
+
+
 class APIKey(Base, TimestampMixin):
     __tablename__ = "api_keys"
 
-    id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     organization_id = Column(
-        UUID(as_uuid=False),
+        String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     user_id = Column(
-        UUID(as_uuid=False),
+        String(36),
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -201,15 +314,15 @@ class APIKey(Base, TimestampMixin):
 class BrowserSession(Base, TimestampMixin):
     __tablename__ = "browser_sessions"
 
-    id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     organization_id = Column(
-        UUID(as_uuid=False),
+        String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     agent_id = Column(
-        UUID(as_uuid=False),
+        String(36),
         ForeignKey("agents.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -234,9 +347,9 @@ class BrowserSession(Base, TimestampMixin):
 class Policy(Base, TimestampMixin):
     __tablename__ = "policies"
 
-    id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     organization_id = Column(
-        UUID(as_uuid=False),
+        String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -246,19 +359,19 @@ class Policy(Base, TimestampMixin):
     version = Column(Integer, nullable=False, default=1)
     is_active = Column(Boolean, nullable=False, default=False)
     is_default = Column(Boolean, nullable=False, default=False)
-    allowed_domains = Column(JSONB, nullable=False, default=list)
-    blocked_domains = Column(JSONB, nullable=False, default=list)
+    allowed_domains = Column(JSON, nullable=False, default=list)
+    blocked_domains = Column(JSON, nullable=False, default=list)
     default_domain_policy = Column(String(20), nullable=False, default="deny")
-    allowed_ports = Column(JSONB, nullable=False, default=list)
+    allowed_ports = Column(JSON, nullable=False, default=list)
     allow_private_networks = Column(Boolean, nullable=False, default=False)
     agent_id = Column(
-        UUID(as_uuid=False),
+        String(36),
         ForeignKey("agents.id", ondelete="CASCADE"),
         nullable=True,
         index=True,
     )
     created_by_user_id = Column(
-        UUID(as_uuid=False),
+        String(36),
         ForeignKey("users.id"),
         nullable=True,
     )
@@ -276,22 +389,22 @@ class Policy(Base, TimestampMixin):
 class PolicyVersion(Base, TimestampMixin):
     __tablename__ = "policy_versions"
 
-    id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     policy_id = Column(
-        UUID(as_uuid=False),
+        String(36),
         ForeignKey("policies.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     version = Column(Integer, nullable=False)
-    allowed_domains = Column(JSONB, nullable=False, default=list)
-    blocked_domains = Column(JSONB, nullable=False, default=list)
+    allowed_domains = Column(JSON, nullable=False, default=list)
+    blocked_domains = Column(JSON, nullable=False, default=list)
     default_domain_policy = Column(String(20), nullable=False, default="deny")
-    allowed_ports = Column(JSONB, nullable=False, default=list)
+    allowed_ports = Column(JSON, nullable=False, default=list)
     allow_private_networks = Column(Boolean, nullable=False, default=False)
     change_reason = Column(Text, nullable=True)
     changed_by_user_id = Column(
-        UUID(as_uuid=False),
+        String(36),
         ForeignKey("users.id"),
         nullable=True,
     )
@@ -307,9 +420,9 @@ class PolicyVersion(Base, TimestampMixin):
 class AuditEvent(Base, TimestampMixin):
     __tablename__ = "audit_events"
 
-    id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     organization_id = Column(
-        UUID(as_uuid=False),
+        String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -325,7 +438,7 @@ class AuditEvent(Base, TimestampMixin):
     reason = Column(Text, nullable=True)
     severity = Column(String(20), nullable=False, default="info")
     request_id = Column(String(255), nullable=True, index=True)
-    event_metadata = Column("metadata", JSONB, nullable=False, default=dict)
+    event_metadata = Column("metadata", JSON, nullable=False, default=dict)
     ip_address = Column(String(64), nullable=True)
 
     organization = relationship("Organization", back_populates="audit_events")
@@ -340,9 +453,9 @@ class AuditEvent(Base, TimestampMixin):
 class SecurityIncident(Base, TimestampMixin):
     __tablename__ = "security_incidents"
 
-    id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     organization_id = Column(
-        UUID(as_uuid=False),
+        String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -355,10 +468,10 @@ class SecurityIncident(Base, TimestampMixin):
     source_agent = Column(String(255), nullable=True, index=True)
     destination = Column(Text, nullable=True)
     enforcement_decision = Column(String(50), nullable=True)
-    evidence = Column(JSONB, nullable=False, default=dict)
+    evidence = Column(JSON, nullable=False, default=dict)
     resolved_at = Column(DateTime(timezone=True), nullable=True)
     resolved_by_user_id = Column(
-        UUID(as_uuid=False),
+        String(36),
         ForeignKey("users.id"),
         nullable=True,
     )
@@ -374,9 +487,9 @@ class SecurityIncident(Base, TimestampMixin):
 class Deployment(Base, TimestampMixin):
     __tablename__ = "deployments"
 
-    id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     organization_id = Column(
-        UUID(as_uuid=False),
+        String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -413,9 +526,9 @@ class Deployment(Base, TimestampMixin):
 class SystemConfig(Base, TimestampMixin):
     __tablename__ = "system_config"
 
-    id = Column(UUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     key = Column(String(255), nullable=False, unique=True, index=True)
-    value = Column(JSONB, nullable=False)
+    value = Column(JSON, nullable=False)
     description = Column(Text, nullable=True)
     is_sensitive = Column(Boolean, nullable=False, default=False)
 

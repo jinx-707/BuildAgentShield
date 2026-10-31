@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import structlog
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 from sqlalchemy import (
@@ -26,7 +26,7 @@ from sqlalchemy import (
     create_engine,
     select,
 )
-from sqlalchemy.dialects.postgresql import UUID as PGUUID
+
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -61,7 +61,7 @@ class EvidenceRecord(Base):
     __tablename__ = "collected_evidence"
 
     id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
     simulation_id: Mapped[str] = mapped_column(String(36), index=True)
     organization_id: Mapped[str] = mapped_column(String(36), index=True)
@@ -80,7 +80,11 @@ class EvidenceRecord(Base):
     )
 
 
-engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True, pool_size=10, max_overflow=20)
+_db_url = settings.DATABASE_URL
+if _db_url.startswith("sqlite"):
+    engine = create_engine(_db_url, connect_args={"check_same_thread": False})
+else:
+    engine = create_engine(_db_url, pool_pre_ping=True, pool_size=10, max_overflow=20)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
@@ -139,8 +143,8 @@ async def health():
     return {"status": "healthy", "service": "evidence-collector"}
 
 
-@app.post("/v1/evidence", response_model=EvidenceResponse, status_code=201)
-async def submit_evidence(request: EvidenceSubmitRequest, db: Session = next(get_db())):
+@app.post("/v1/evidence", status_code=201)
+async def submit_evidence(request: EvidenceSubmitRequest, db: Session = Depends(get_db)) -> EvidenceResponse:
     evidence = EvidenceRecord(
         simulation_id=request.simulation_id,
         organization_id=request.organization_id,
@@ -171,8 +175,8 @@ async def submit_evidence(request: EvidenceSubmitRequest, db: Session = next(get
     )
 
 
-@app.get("/v1/evidence/simulation/{simulation_id}", response_model=list[EvidenceResponse])
-async def get_simulation_evidence(simulation_id: str, db: Session = next(get_db())):
+@app.get("/v1/evidence/simulation/{simulation_id}")
+async def get_simulation_evidence(simulation_id: str, db: Session = Depends(get_db)) -> list[EvidenceResponse]:
     evidence = (
         db.query(EvidenceRecord)
         .filter(EvidenceRecord.simulation_id == simulation_id)
@@ -196,8 +200,8 @@ async def get_simulation_evidence(simulation_id: str, db: Session = next(get_db(
     ]
 
 
-@app.get("/v1/evidence/campaign/{campaign_id}", response_model=list[EvidenceResponse])
-async def get_campaign_evidence(campaign_id: str, db: Session = next(get_db())):
+@app.get("/v1/evidence/campaign/{campaign_id}")
+async def get_campaign_evidence(campaign_id: str, db: Session = Depends(get_db)) -> list[EvidenceResponse]:
     evidence = (
         db.query(EvidenceRecord)
         .filter(EvidenceRecord.campaign_id == campaign_id)
@@ -221,14 +225,14 @@ async def get_campaign_evidence(campaign_id: str, db: Session = next(get_db())):
     ]
 
 
-@app.get("/v1/evidence/organization/{organization_id}", response_model=list[EvidenceResponse])
+@app.get("/v1/evidence/organization/{organization_id}")
 async def get_organization_evidence(
     organization_id: str,
-    db: Session = next(get_db()),
+    db: Session = Depends(get_db),
     scenario_id: Optional[str] = None,
     limit: int = 1000,
     offset: int = 0,
-):
+) -> list[EvidenceResponse]:
     query = db.query(EvidenceRecord).filter(EvidenceRecord.organization_id == organization_id)
     if scenario_id:
         query = query.filter(EvidenceRecord.scenario_id == scenario_id)

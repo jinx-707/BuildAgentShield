@@ -48,6 +48,18 @@ class Settings(BaseSettings):
     allow_private_networks: bool = False
     dns_preflight_enabled: bool = True
 
+    # Dedicated Docker attack target services (Cyber Range lab profile).
+    # These are reached via internal Compose DNS names and are reused by the
+    # attack simulation lab instead of spinning up a local loopback mock server.
+    attack_prompt_injection_target_url: str = "http://prompt-injection-target:8081"
+    attack_phishing_target_url: str = "http://phishing-target:8082"
+    attack_ssrf_target_url: str = "http://ssrf-target:8083"
+    attack_malicious_download_target_url: str = "http://malicious-download-target:8084"
+    attack_resource_exhaustion_target_url: str = "http://resource-exhaustion-target:8085"
+    attack_dns_rebinding_target_url: str = "http://dns-rebinding-target:8086"
+    attack_data_exfiltration_sink_url: str = "http://data-exfiltration-sink:8087"
+    attack_mock_metadata_url: str = "http://mock-metadata:8088"
+
     # Database
     database_url: str = ""
     database_pool_size: int = Field(default=10, ge=1, le=100)

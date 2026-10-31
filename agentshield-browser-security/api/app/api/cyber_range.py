@@ -22,6 +22,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db.base import get_db_session
@@ -275,10 +276,12 @@ async def create_campaign(
 
     # Store in database (using raw SQL for new tables)
     db.execute(
-        """
-        INSERT INTO simulation_campaigns (id, organization_id, user_id, name, description, policy_version, status, scenario_ids, execution_mode, max_concurrency, created_at, updated_at)
-        VALUES (:id, :org_id, :user_id, :name, :desc, :policy, 'QUEUED', :scenarios, :mode, :concurrency, :created, :updated)
-        """,
+        text(
+            """
+            INSERT INTO simulation_campaigns (id, organization_id, user_id, name, description, policy_version, status, scenario_ids, execution_mode, max_concurrency, created_at, updated_at)
+            VALUES (:id, :org_id, :user_id, :name, :desc, :policy, 'QUEUED', :scenarios, :mode, :concurrency, :created, :updated)
+            """
+        ),
         {
             "id": campaign_id,
             "org_id": request.organization_id,
@@ -300,10 +303,12 @@ async def create_campaign(
         sim_id = str(uuid.uuid4())
         config = SCENARIOS[scenario_id]
         db.execute(
-            """
-            INSERT INTO simulations (id, campaign_id, organization_id, scenario_id, target_id, status, policy_version, created_at, updated_at)
-            VALUES (:id, :campaign_id, :org_id, :scenario_id, :target_id, 'QUEUED', :policy, :created, :updated)
-            """,
+            text(
+                """
+                INSERT INTO simulations (id, campaign_id, organization_id, scenario_id, target_id, status, policy_version, created_at, updated_at)
+                VALUES (:id, :campaign_id, :org_id, :scenario_id, :target_id, 'QUEUED', :policy, :created, :updated)
+                """
+            ),
             {
                 "id": sim_id,
                 "campaign_id": campaign_id,
@@ -355,14 +360,16 @@ async def list_campaigns(
     offset: int = Query(default=0, ge=0),
 ):
     rows = db.execute(
-        """
-        SELECT id, organization_id, user_id, name, description, policy_version, status,
-               scenario_ids, execution_mode, max_concurrency, started_at, completed_at, error, created_at
-        FROM simulation_campaigns
-        WHERE organization_id = :org_id
-        ORDER BY created_at DESC
-        LIMIT :limit OFFSET :offset
-        """,
+        text(
+            """
+            SELECT id, organization_id, user_id, name, description, policy_version, status,
+                   scenario_ids, execution_mode, max_concurrency, started_at, completed_at, error, created_at
+            FROM simulation_campaigns
+            WHERE organization_id = :org_id
+            ORDER BY created_at DESC
+            LIMIT :limit OFFSET :offset
+            """
+        ),
         {"org_id": principal.organization_id, "limit": limit, "offset": offset},
     ).fetchall()
 
@@ -394,12 +401,14 @@ async def get_campaign(
     db: Session = Depends(get_db),
 ):
     row = db.execute(
-        """
-        SELECT id, organization_id, user_id, name, description, policy_version, status,
-               scenario_ids, execution_mode, max_concurrency, started_at, completed_at, error, created_at
-        FROM simulation_campaigns
-        WHERE id = :id
-        """,
+        text(
+            """
+            SELECT id, organization_id, user_id, name, description, policy_version, status,
+                   scenario_ids, execution_mode, max_concurrency, started_at, completed_at, error, created_at
+            FROM simulation_campaigns
+            WHERE id = :id
+            """
+        ),
         {"id": campaign_id},
     ).fetchone()
 
@@ -437,7 +446,9 @@ async def cancel_campaign(
     db: Session = Depends(get_db),
 ):
     row = db.execute(
-        "SELECT organization_id, status FROM simulation_campaigns WHERE id = :id",
+        text(
+            "SELECT organization_id, status FROM simulation_campaigns WHERE id = :id"
+        ),
         {"id": campaign_id},
     ).fetchone()
 
@@ -457,26 +468,32 @@ async def cancel_campaign(
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).isoformat()
     db.execute(
-        "UPDATE simulation_campaigns SET status = 'CANCELLED', completed_at = :now, updated_at = :now WHERE id = :id",
+        text(
+            "UPDATE simulation_campaigns SET status = 'CANCELLED', completed_at = :now, updated_at = :now WHERE id = :id"
+        ),
         {"id": campaign_id, "now": now},
     )
 
     # Cancel pending simulations
     db.execute(
-        """
-        UPDATE simulations SET status = 'CANCELLED', completed_at = :now, updated_at = :now
-        WHERE campaign_id = :id AND status IN ('QUEUED', 'INITIALIZING', 'RUNNING')
-        """,
+        text(
+            """
+            UPDATE simulations SET status = 'CANCELLED', completed_at = :now, updated_at = :now
+            WHERE campaign_id = :id AND status IN ('QUEUED', 'INITIALIZING', 'RUNNING')
+            """
+        ),
         {"id": campaign_id, "now": now},
     )
     db.commit()
 
     # Log event
     db.execute(
-        """
-        INSERT INTO campaign_events (id, campaign_id, event_type, message, data, created_at)
-        VALUES (:id, :campaign_id, 'campaign_cancelled', 'Campaign cancelled by user', '{}', :now)
-        """,
+        text(
+            """
+            INSERT INTO campaign_events (id, campaign_id, event_type, message, data, created_at)
+            VALUES (:id, :campaign_id, 'campaign_cancelled', 'Campaign cancelled by user', '{}', :now)
+            """
+        ),
         {"id": str(uuid.uuid4()), "campaign_id": campaign_id, "now": now},
     )
     db.commit()
@@ -491,7 +508,7 @@ async def get_campaign_report(
     db: Session = Depends(get_db),
 ):
     campaign = db.execute(
-        "SELECT * FROM simulation_campaigns WHERE id = :id",
+        text("SELECT * FROM simulation_campaigns WHERE id = :id"),
         {"id": campaign_id},
     ).fetchone()
 
@@ -505,7 +522,7 @@ async def get_campaign_report(
         )
 
     simulations = db.execute(
-        "SELECT * FROM simulations WHERE campaign_id = :id ORDER BY created_at",
+        text("SELECT * FROM simulations WHERE campaign_id = :id ORDER BY created_at"),
         {"id": campaign_id},
     ).fetchall()
 
@@ -604,12 +621,14 @@ async def get_simulation(
     db: Session = Depends(get_db),
 ):
     row = db.execute(
-        """
-        SELECT id, campaign_id, organization_id, scenario_id, target_id, status, assessment,
-               policy_version, browser_session_id, agent_id, started_at, completed_at,
-               error, agent_shield_decision, proxy_decision, created_at
-        FROM simulations WHERE id = :id
-        """,
+        text(
+            """
+            SELECT id, campaign_id, organization_id, scenario_id, target_id, status, assessment,
+                   policy_version, browser_session_id, agent_id, started_at, completed_at,
+                   error, agent_shield_decision, proxy_decision, created_at
+            FROM simulations WHERE id = :id
+            """
+        ),
         {"id": simulation_id},
     ).fetchone()
 
@@ -650,7 +669,7 @@ async def get_simulation_evidence(
 ):
     # Verify simulation belongs to organization
     sim = db.execute(
-        "SELECT organization_id FROM simulations WHERE id = :id",
+        text("SELECT organization_id FROM simulations WHERE id = :id"),
         {"id": simulation_id},
     ).fetchone()
 
@@ -664,12 +683,14 @@ async def get_simulation_evidence(
         )
 
     evidence = db.execute(
-        """
-        SELECT id, simulation_id, evidence_type, description, content, source, created_at
-        FROM simulation_evidence
-        WHERE simulation_id = :sim_id
-        ORDER BY created_at
-        """,
+        text(
+            """
+            SELECT id, simulation_id, evidence_type, description, content, source, created_at
+            FROM simulation_evidence
+            WHERE simulation_id = :sim_id
+            ORDER BY created_at
+            """
+        ),
         {"sim_id": simulation_id},
     ).fetchall()
 
@@ -697,7 +718,7 @@ async def stream_simulation_events(simulation_id: str, request: Request):
     db = next(get_db_session())
     try:
         sim = db.execute(
-            "SELECT organization_id FROM simulations WHERE id = :id",
+            text("SELECT organization_id FROM simulations WHERE id = :id"),
             {"id": simulation_id},
         ).fetchone()
         if not sim or str(sim.organization_id) != (request.headers.get("x-organization-id") or ""):
@@ -723,7 +744,7 @@ async def stream_simulation_events(simulation_id: str, request: Request):
                     params["last_id"] = last_event_id
                 query += " ORDER BY created_at LIMIT 100"
 
-                events = db.execute(query, params).fetchall()
+                events = db.execute(text(query), params).fetchall()
                 for event in events:
                     yield f"data: {json.dumps({'id': str(event.id), 'stage': event.stage, 'message': event.message, 'data': event.data, 'timestamp': event.created_at.isoformat() if event.created_at else None})}\n\n"
                     last_event_id = event.id
@@ -744,7 +765,7 @@ async def stream_campaign_events(campaign_id: str, request: Request):
     db = next(get_db_session())
     try:
         camp = db.execute(
-            "SELECT organization_id FROM simulation_campaigns WHERE id = :id",
+            text("SELECT organization_id FROM simulation_campaigns WHERE id = :id"),
             {"id": campaign_id},
         ).fetchone()
         if not camp or str(camp.organization_id) != (request.headers.get("x-organization-id") or ""):
@@ -770,7 +791,7 @@ async def stream_campaign_events(campaign_id: str, request: Request):
                     params["last_id"] = last_event_id
                 query += " ORDER BY created_at LIMIT 100"
 
-                events = db.execute(query, params).fetchall()
+                events = db.execute(text(query), params).fetchall()
                 for event in events:
                     yield f"data: {json.dumps({'id': str(event.id), 'type': event.event_type, 'message': event.message, 'data': event.data, 'timestamp': event.created_at.isoformat() if event.created_at else None})}\n\n"
                     last_event_id = event.id
@@ -815,10 +836,12 @@ async def run_single_scenario(
     config = SCENARIOS[scenario_id]
 
     db.execute(
-        """
-        INSERT INTO simulation_campaigns (id, organization_id, user_id, name, description, policy_version, status, scenario_ids, execution_mode, max_concurrency, created_at, updated_at)
-        VALUES (:id, :org_id, :user_id, :name, :desc, 'default', 'QUEUED', :scenarios, 'sequential', 1, :created, :updated)
-        """,
+        text(
+            """
+            INSERT INTO simulation_campaigns (id, organization_id, user_id, name, description, policy_version, status, scenario_ids, execution_mode, max_concurrency, created_at, updated_at)
+            VALUES (:id, :org_id, :user_id, :name, :desc, 'default', 'QUEUED', :scenarios, 'sequential', 1, :created, :updated)
+            """
+        ),
         {
             "id": campaign_id,
             "org_id": organization_id,
@@ -832,10 +855,12 @@ async def run_single_scenario(
     )
 
     db.execute(
-        """
-        INSERT INTO simulations (id, campaign_id, organization_id, scenario_id, target_id, status, policy_version, agent_id, session_id, created_at, updated_at)
-        VALUES (:id, :campaign_id, :org_id, :scenario_id, :target_id, 'QUEUED', 'default', :agent_id, :session_id, :created, :updated)
-        """,
+        text(
+            """
+            INSERT INTO simulations (id, campaign_id, organization_id, scenario_id, target_id, status, policy_version, agent_id, session_id, created_at, updated_at)
+            VALUES (:id, :campaign_id, :org_id, :scenario_id, :target_id, 'QUEUED', 'default', :agent_id, :session_id, :created, :updated)
+            """
+        ),
         {
             "id": sim_id,
             "campaign_id": campaign_id,

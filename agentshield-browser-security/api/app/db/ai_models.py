@@ -9,15 +9,16 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import (
+    String,
     Column,
     ForeignKey,
     Index,
     Integer,
-    String,
     Text,
     Boolean,
+    DateTime,
 )
-from sqlalchemy.dialects.postgresql import UUID as PGUUID, JSONB
+from sqlalchemy import JSON
 from sqlalchemy.orm import relationship
 
 from app.db.base import Base, TimestampMixin
@@ -32,15 +33,15 @@ class AgentExecution(Base, TimestampMixin):
 
     __tablename__ = "agent_executions"
 
-    id = Column(PGUUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     organization_id = Column(
-        PGUUID(as_uuid=False),
+        String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     agent_id = Column(
-        PGUUID(as_uuid=False),
+        String(36),
         ForeignKey("agents.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -54,7 +55,7 @@ class AgentExecution(Base, TimestampMixin):
     severity = Column(String(20), nullable=False, default="info")
     risk_score = Column(Integer, nullable=True)
     trust_label = Column(String(20), nullable=False, default="untrusted")
-    evidence = Column(JSONB, nullable=False, default=dict)
+    evidence = Column(JSON, nullable=False, default=dict)
 
     organization = relationship("Organization")
     agent = relationship("Agent")
@@ -71,22 +72,22 @@ class ThreatDetection(Base, TimestampMixin):
 
     __tablename__ = "threat_detections"
 
-    id = Column(PGUUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     organization_id = Column(
-        PGUUID(as_uuid=False),
+        String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     agent_id = Column(
-        PGUUID(as_uuid=False),
+        String(36),
         ForeignKey("agents.id", ondelete="CASCADE"),
         nullable=True,
         index=True,
     )
     session_id = Column(String(255), nullable=True, index=True)
     execution_id = Column(
-        PGUUID(as_uuid=False),
+        String(36),
         ForeignKey("agent_executions.id", ondelete="CASCADE"),
         nullable=True,
         index=True,
@@ -98,7 +99,7 @@ class ThreatDetection(Base, TimestampMixin):
     risk_score = Column(Integer, nullable=True)
     action_taken = Column(String(50), nullable=True)
     target = Column(Text, nullable=True)
-    evidence = Column(JSONB, nullable=False, default=dict)
+    evidence = Column(JSON, nullable=False, default=dict)
 
     organization = relationship("Organization")
     agent = relationship("Agent")
@@ -124,21 +125,21 @@ class RiskAssessment(Base, TimestampMixin):
 
     __tablename__ = "risk_assessments"
 
-    id = Column(PGUUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     organization_id = Column(
-        PGUUID(as_uuid=False),
+        String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     agent_id = Column(
-        PGUUID(as_uuid=False),
+        String(36),
         ForeignKey("agents.id", ondelete="CASCADE"),
         nullable=True,
         index=True,
     )
     execution_id = Column(
-        PGUUID(as_uuid=False),
+        String(36),
         ForeignKey("agent_executions.id", ondelete="CASCADE"),
         nullable=True,
         index=True,
@@ -147,8 +148,8 @@ class RiskAssessment(Base, TimestampMixin):
     severity = Column(String(20), nullable=False, default="medium")
     recommended_action = Column(String(50), nullable=False)
     enforcement_decision = Column(String(50), nullable=False)
-    detection_reasons = Column(JSONB, nullable=False, default=list)
-    risk_factors = Column(JSONB, nullable=False, default=dict)
+    detection_reasons = Column(JSON, nullable=False, default=list)
+    risk_factors = Column(JSON, nullable=False, default=dict)
 
     organization = relationship("Organization")
     agent = relationship("Agent")
@@ -169,15 +170,15 @@ class DlpFinding(Base, TimestampMixin):
 
     __tablename__ = "dlp_findings"
 
-    id = Column(PGUUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     organization_id = Column(
-        PGUUID(as_uuid=False),
+        String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     agent_id = Column(
-        PGUUID(as_uuid=False),
+        String(36),
         ForeignKey("agents.id", ondelete="CASCADE"),
         nullable=True,
         index=True,
@@ -189,7 +190,7 @@ class DlpFinding(Base, TimestampMixin):
     confidence = Column(Integer, nullable=True)
     action_taken = Column(String(50), nullable=True)
     target = Column(Text, nullable=True)
-    evidence = Column(JSONB, nullable=False, default=dict)
+    evidence = Column(JSON, nullable=False, default=dict)
 
     organization = relationship("Organization")
     agent = relationship("Agent")
@@ -205,25 +206,25 @@ class ToolDecision(Base, TimestampMixin):
 
     __tablename__ = "tool_decisions"
 
-    id = Column(PGUUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     organization_id = Column(
-        PGUUID(as_uuid=False),
+        String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     agent_id = Column(
-        PGUUID(as_uuid=False),
+        String(36),
         ForeignKey("agents.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     session_id = Column(String(255), nullable=True, index=True)
     tool_name = Column(String(100), nullable=False, index=True)
-    tool_args = Column(JSONB, nullable=False, default=dict)
+    tool_args = Column(JSON, nullable=False, default=dict)
     decision = Column(String(50), nullable=False, index=True)
     reason = Column(Text, nullable=True)
-    policy_references = Column(JSONB, nullable=False, default=list)
+    policy_references = Column(JSON, nullable=False, default=list)
     risk_score = Column(Integer, nullable=True)
 
     organization = relationship("Organization")
@@ -241,15 +242,15 @@ class AttackSimulationRun(Base, TimestampMixin):
 
     __tablename__ = "attack_simulation_runs"
 
-    id = Column(PGUUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     organization_id = Column(
-        PGUUID(as_uuid=False),
+        String(36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     agent_id = Column(
-        PGUUID(as_uuid=False),
+        String(36),
         ForeignKey("agents.id", ondelete="CASCADE"),
         nullable=True,
         index=True,
@@ -261,7 +262,17 @@ class AttackSimulationRun(Base, TimestampMixin):
     attempted_action = Column(Text, nullable=True)
     policy_decision = Column(String(50), nullable=True)
     enforcement_result = Column(String(20), nullable=False, index=True)
-    evidence = Column(JSONB, nullable=False, default=dict)
+    # --- Real execution metrics (PHASE 2/6) ---
+    requests_attempted = Column(Integer, nullable=False, default=0)
+    requests_allowed = Column(Integer, nullable=False, default=0)
+    requests_blocked = Column(Integer, nullable=False, default=0)
+    detection_outcome = Column(String(20), nullable=True)  # detected / not_detected
+    execution_duration_ms = Column(Integer, nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    failure_reason = Column(Text, nullable=True)
+    # ------------------------------------------
+    evidence = Column(JSON, nullable=False, default=dict)
 
     organization = relationship("Organization")
     agent = relationship("Agent")
@@ -286,15 +297,15 @@ class ScenarioEvidence(Base, TimestampMixin):
 
     __tablename__ = "scenario_evidence"
 
-    id = Column(PGUUID(as_uuid=False), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     run_id = Column(
-        PGUUID(as_uuid=False),
+        String(36),
         ForeignKey("attack_simulation_runs.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     evidence_type = Column(String(50), nullable=False, index=True)
     description = Column(Text, nullable=True)
-    content = Column(JSONB, nullable=False, default=dict)
+    content = Column(JSON, nullable=False, default=dict)
 
     run = relationship("AttackSimulationRun")

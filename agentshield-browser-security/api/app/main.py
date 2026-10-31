@@ -14,6 +14,7 @@ from app.api.browser import router as browser_router
 from app.api.cyber_range import router as cyber_range_router
 from app.api.enterprise import router as enterprise_router
 from app.api.health import router as health_router
+from app.api.integrations import router as integrations_router
 from app.clients.browser_worker import BrowserWorkerClient
 from app.clients.search_provider import SearchProvider, build_search_provider
 from app.config import Settings, get_settings
@@ -189,6 +190,7 @@ def create_app(
     app.add_exception_handler(RateLimitExceeded, _rate_limited)
     app.add_exception_handler(RateLimitBackendUnavailable, _rate_limit_unavailable)
     app.include_router(health_router)
+    app.include_router(integrations_router)
     app.include_router(browser_router)
     app.include_router(audit_router)
     app.include_router(enterprise_router)

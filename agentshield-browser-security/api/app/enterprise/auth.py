@@ -74,9 +74,9 @@ def create_access_token(
     roles: Optional[list[str]] = None,
     expires_delta: Optional[timedelta] = None,
 ) -> str:
-    to_encode = {"sub": subject}
+    to_encode = {"sub": str(subject)}
     if organization_id:
-        to_encode["org"] = organization_id
+        to_encode["org"] = str(organization_id)
     if roles:
         to_encode["roles"] = roles
     if expires_delta:

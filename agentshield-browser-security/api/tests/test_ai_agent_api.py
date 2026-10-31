@@ -346,15 +346,27 @@ class TestAttackSimulation:
             egress_proxy_url="",
         )
 
-    def test_scenario_catalog_returns_10(self):
+    def test_scenario_catalog_returns_six_categories(self):
         settings = self._make_test_settings()
         app = create_app(settings=settings)
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get("/v1/attack-simulation/scenarios")
         assert resp.status_code == 200
         scenarios = resp.json()
-        assert len(scenarios) == 10
+        assert len(scenarios) == 16, scenarios
         ids = {s["scenario_id"] for s in scenarios}
+        categories = {s["category"] for s in scenarios}
         assert "indirect-prompt-injection" in ids
-        assert "ssrf-metadata" in ids
-        assert "sensitive-data-exfil" in ids
+        assert "ssrf" in ids
+        assert "dns-rebinding" in ids
+        assert "sensitive-data-transmission" in ids
+        assert "dlp-outbound-blocking" in ids
+        expected_categories = {
+            "ai-security",
+            "social-engineering",
+            "network-security",
+            "malware",
+            "denial-of-service",
+            "data-loss",
+        }
+        assert expected_categories.issubset(categories), categories

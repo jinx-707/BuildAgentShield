@@ -341,62 +341,8 @@ def upgrade() -> None:
         ["stage"],
     )
 
-    op.create_table(
-        "collected_evidence",
-        sa.Column("id", postgresql.UUID(as_uuid=False), nullable=False),
-        sa.Column("simulation_id", sa.String(length=36), nullable=False),
-        sa.Column(
-            "organization_id",
-            postgresql.UUID(as_uuid=False),
-            nullable=False,
-        ),
-        sa.Column(
-            "campaign_id",
-            postgresql.UUID(as_uuid=False),
-            nullable=True,
-        ),
-        sa.Column("scenario_id", sa.String(length=100), nullable=False),
-        sa.Column("source", sa.String(length=50), nullable=False),
-        sa.Column("evidence_type", sa.String(length=50), nullable=False),
-        sa.Column("description", sa.Text(), nullable=True),
-        sa.Column("content", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default="{}"),
-        sa.Column(
-            "collected_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.ForeignKeyConstraint(
-            ["organization_id"],
-            ["organizations.id"],
-            ondelete="CASCADE",
-        ),
-        sa.ForeignKeyConstraint(
-            ["campaign_id"],
-            ["simulation_campaigns.id"],
-            ondelete="CASCADE",
-        ),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index(
-        "ix_evidence_sim_time",
-        "collected_evidence",
-        ["simulation_id", "collected_at"],
-    )
-    op.create_index(
-        "ix_evidence_org_scenario",
-        "collected_evidence",
-        ["organization_id", "scenario_id"],
-    )
-    op.create_index(
-        "ix_evidence_source_type",
-        "collected_evidence",
-        ["source", "evidence_type"],
-    )
-
 
 def downgrade() -> None:
-    op.drop_table("collected_evidence")
     op.drop_table("simulation_events")
     op.drop_table("campaign_events")
     op.drop_table("simulation_evidence")

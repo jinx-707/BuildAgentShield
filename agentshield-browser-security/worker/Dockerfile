@@ -3,7 +3,7 @@ FROM node:22-bookworm-slim AS dependencies
 ENV PUPPETEER_SKIP_DOWNLOAD=true
 WORKDIR /app
 
-COPY package.json package-lock.json ./
+COPY worker/package.json worker/package-lock.json ./
 RUN npm ci --omit=dev
 
 FROM node:22-bookworm-slim
@@ -18,15 +18,19 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         chromium \
+        chromium-sandbox \
         dumb-init \
         fonts-liberation \
+    && chmod 4755 /usr/lib/chromium/chrome-sandbox \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY --from=dependencies /app/node_modules ./node_modules
-COPY package.json ./
-COPY src ./src
+COPY worker/package.json ./
+COPY worker/src ./src
+COPY proxy/src/lib/policy.js /proxy/src/lib/policy.js
+RUN ln -s /app/node_modules /proxy/node_modules
 
 USER node
 

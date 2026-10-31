@@ -1,5 +1,50 @@
 import type { Agent, Approval, AuditEvent } from "./demo"
 
+export type CapabilityRecord = {
+  id: string
+  organization_id: string
+  key: string
+  name: string
+  description: string | null
+  tools: string[]
+  is_system: boolean
+  is_active: boolean
+  created_at: string
+}
+
+export type AgentCapabilityRecord = {
+  id: string
+  organization_id: string
+  agent_id: string
+  capability_id: string
+  capability_key: string | null
+  capability_name: string | null
+  enabled: boolean
+  allowed_tools: string[]
+  resource_scope: string[]
+  allowed_domains: string[]
+  require_approval: boolean
+  payment_budget: number | null
+  created_at: string
+  updated_at: string
+}
+
+export type ApprovalRequestRecord = {
+  id: string
+  organization_id: string
+  agent_id: string
+  capability_id: string
+  tool_name: string
+  tool_args: Record<string, unknown>
+  target: string | null
+  status: string
+  requested_by: string | null
+  approved_by: string | null
+  requested_at: string
+  approved_at: string | null
+  reason: string | null
+}
+
 type ApiEnvironment = Record<string, string | undefined>
 
 const environment: ApiEnvironment =
@@ -213,6 +258,8 @@ type BackendAgent = {
   status: string
   created_at: string
   last_activity_at: string | null
+  permissions?: string[]
+  scopes?: Record<string, unknown>
 }
 
 type BackendPolicy = {
@@ -368,6 +415,8 @@ function mapAgent(row: BackendAgent): AgentRecord {
     initials: initials(row.name) || "AG",
     color: "violet",
     created_at: row.created_at,
+    permissions: row.permissions,
+    scopes: row.scopes,
   }
 }
 
@@ -615,9 +664,73 @@ export async function updateAgent(
       501,
     )
   }
-  throw new ApiError(
-    "Capability permissions and scopes are not supported by the browser-security API.",
-    501,
+  const orgId = organizationId()
+  const result = await request<AgentRecord>(
+    `/agents/${encodeURIComponent(agentId)}`,
+    {
+      method: "PATCH",
+      body: {
+        permissions: patch.permissions,
+        scopes: patch.scopes,
+      },
+    },
+  )
+  return result
+}
+
+export async function getCapabilities(): Promise<CapabilityRecord[]> {
+  const orgId = organizationId()
+  return request<CapabilityRecord[]>(
+    organizationPath("/capabilities"),
+    { method: "GET" },
+  )
+}
+
+export async function getAgentCapabilities(agentId: string): Promise<AgentCapabilityRecord[]> {
+  return request<AgentCapabilityRecord[]>(
+    `/agents/${encodeURIComponent(agentId)}/capabilities`,
+    { method: "GET" },
+  )
+}
+
+export async function updateAgentCapability(
+  agentId: string,
+  capabilityKey: string,
+  patch: {
+    enabled?: boolean
+    allowed_tools?: string[]
+    resource_scope?: string[]
+    allowed_domains?: string[]
+    require_approval?: boolean
+    payment_budget?: number
+  },
+): Promise<AgentCapabilityRecord> {
+  return request<AgentCapabilityRecord>(
+    `/agents/${encodeURIComponent(agentId)}/capabilities/${encodeURIComponent(capabilityKey)}`,
+    { method: "PATCH", body: patch },
+  )
+}
+
+export async function getApprovals(status?: string) {
+  const orgId = organizationId()
+  const params = status ? `?status=${encodeURIComponent(status)}` : ""
+  return request<ApprovalRequestRecord[]>(
+    organizationPath(`/approvals${params}`),
+    { method: "GET" },
+  )
+}
+
+export async function approveRequest(approvalId: string, comment?: string) {
+  return request<ApprovalRequestRecord>(
+    `/approvals/${encodeURIComponent(approvalId)}/approve`,
+    { method: "POST", body: { reason: comment } },
+  )
+}
+
+export async function rejectRequest(approvalId: string, comment?: string) {
+  return request<ApprovalRequestRecord>(
+    `/approvals/${encodeURIComponent(approvalId)}/reject`,
+    { method: "POST", body: { reason: comment } },
   )
 }
 
@@ -626,24 +739,6 @@ export async function rotateAgentKey(
 ): Promise<{ api_key: string; key_prefix: string }> {
   throw new ApiError(
     "Agent key rotation is not supported by the browser-security API. Create a new agent to issue a new key.",
-    501,
-  )
-}
-
-export async function getApprovals(_status?: string) {
-  return [] as Approval[]
-}
-
-export async function approveRequest(_approvalId: string, _comment: string) {
-  throw new ApiError(
-    "The browser-security API does not expose an approval queue.",
-    501,
-  )
-}
-
-export async function rejectRequest(_approvalId: string, _comment: string) {
-  throw new ApiError(
-    "The browser-security API does not expose an approval queue.",
     501,
   )
 }
@@ -881,14 +976,12 @@ export async function getIntegrationHealth() {
 }
 
 export async function getAttackScenarios() {
-  const results = await request<{
-    scenarios: Array<{
-      scenario_id: string
-      scenario_name: string
-      threat_category: string | null
-    }>
-  }>("/attack-simulation/scenarios")
-  return results.scenarios.map((s) => ({
+  const results = await request<Array<{
+    scenario_id: string
+    scenario_name: string
+    threat_category: string | null
+  }>>("/attack-simulation/scenarios")
+  return results.map((s) => ({
     id: s.scenario_id,
     name: s.scenario_name,
     description: s.threat_category || "",

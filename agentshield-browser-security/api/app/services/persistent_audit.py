@@ -107,7 +107,7 @@ class PersistentAuditStore:
         finally:
             db.close()
         audit_event = AuditEvent(
-            event_id=event.id,
+            event_id=str(event.id),
             timestamp=event.created_at,
             type=event.event_type,
             actor=event.actor,
