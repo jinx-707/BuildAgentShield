@@ -1,0 +1,69 @@
+# Download Security Policy
+
+downloads:
+  # Maximum file size (bytes). Default 50 MB.
+  max_file_size_bytes: 52428800
+
+  # Maximum content-length to accept before streaming (0 = no pre-check limit)
+  max_content_length_bytes: 52428800
+
+  # Allowed MIME types
+  allowed_mime_types:
+    - "application/pdf"
+    - "text/plain"
+    - "text/csv"
+    - "image/png"
+    - "image/jpeg"
+    - "image/gif"
+    - "application/json"
+    - "application/zip"
+
+  # Blocked MIME types (executables, scripts)
+  blocked_mime_types:
+    - "application/x-executable"
+    - "application/x-elf"
+    - "application/x-dosexec"
+    - "application/x-msdownload"
+    - "application/vnd.microsoft.portable-executable"
+    - "application/x-sh"
+    - "application/x-shellscript"
+    - "text/x-shellscript"
+    - "application/x-python-code"
+    - "application/javascript"
+    - "text/javascript"
+
+  # Allowed file extensions
+  allowed_extensions:
+    - ".pdf"
+    - ".txt"
+    - ".csv"
+    - ".png"
+    - ".jpg"
+    - ".jpeg"
+    - ".gif"
+    - ".json"
+    - ".zip"
+
+  # Redirect policy
+  max_redirects: 3
+  validate_redirect_destination: true
+  block_redirect_to_private_ip: true
+
+  # Timeouts
+  connection_timeout_seconds: 10
+  read_timeout_seconds: 60
+
+  # ClamAV
+  malware_scan_enabled: true
+  fail_closed_if_scanner_unavailable: true
+
+  # Archive decompression bomb protection
+  max_archive_decompress_ratio: 20
+  max_archive_files: 100
+
+  # Approved source domains (empty = allow all non-blocked)
+  approved_source_domains: []
+
+  # Blocked source domains
+  blocked_source_domains:
+    - "malware-test.example.com"

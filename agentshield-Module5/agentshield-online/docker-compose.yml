@@ -1,0 +1,60 @@
+version: "3.9"
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=development
+      - PAYMENT_MODE=test
+      - DATABASE_URL=sqlite+aiosqlite:///./agentshield_online.db
+      - REDIS_URL=redis://redis:6379/0
+      - BROWSER_WORKER_URL=http://browser-worker:3001
+      - BROWSER_WORKER_API_KEY=${BROWSER_WORKER_API_KEY:-dev-browser-worker-key-change-me}
+      - CLAMAV_HOST=clamav
+      - CLAMAV_PORT=3310
+      - SEARCH_PROVIDER=mock
+      - LOCAL_AUTH_ENABLED=true
+      - LOCAL_DEV_API_KEY=${LOCAL_DEV_API_KEY:-dev-api-key-change-me}
+    env_file:
+      - .env
+    volumes:
+      - ./downloads:/app/downloads
+      - ./quarantine:/app/quarantine
+    depends_on:
+      - redis
+      - browser-worker
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/online/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  browser-worker:
+    build:
+      context: ./browser-worker
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:3001:3001"  # Bind only to localhost
+    environment:
+      - BROWSER_WORKER_PORT=3001
+      - BROWSER_WORKER_API_KEY=${BROWSER_WORKER_API_KEY:-dev-browser-worker-key-change-me}
+    security_opt:
+      - no-new-privileges:true
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"  # Bind only to localhost
+    command: redis-server --requirepass ${REDIS_PASSWORD:-devredispass}
+
+  clamav:
+    image: clamav/clamav:latest
+    ports:
+      - "127.0.0.1:3310:3310"  # Bind only to localhost
+    volumes:
+      - clamav_db:/var/lib/clamav
+
+volumes:
+  clamav_db:

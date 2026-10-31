@@ -1,0 +1,49 @@
+name: agentshield-email-security
+
+services:
+  email-security-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      APP_ENV: development
+      PORT: 8001
+      DATABASE_URL: postgresql+asyncpg://agentshield:shieldpass@email-db:5432/agentshield_email
+    ports:
+      - "127.0.0.1:${PORT:-8001}:8001"
+    depends_on:
+      email-db:
+        condition: service_healthy
+    networks:
+      - edge
+      - internal-db
+    restart: unless-stopped
+
+  email-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: agentshield
+      POSTGRES_PASSWORD: shieldpass
+      POSTGRES_DB: agentshield_email
+    expose:
+      - "5432"
+    volumes:
+      - email-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentshield -d agentshield_email"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal-db
+    restart: unless-stopped
+
+volumes:
+  email-pgdata:
+
+networks:
+  edge:
+  internal-db:
+

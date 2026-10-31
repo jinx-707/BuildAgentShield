@@ -1,0 +1,51 @@
+# Python byte code
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Secrets and environment files
+.env
+*.pem
+*.key
+credentials.json
+client_secret*.json
+token.json
+token.pickle
+
+# Module 3 download storage (untrusted / quarantine / approved binaries)
+storage/downloads/
+
+# Database & SQLite files
+*.sqlite
+*.sqlite3
+*.db
+agentshield_email.db
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Logs
+*.log
+logs/
+
+# IDE & Editor artifacts
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Docker
+.dockerignore
+

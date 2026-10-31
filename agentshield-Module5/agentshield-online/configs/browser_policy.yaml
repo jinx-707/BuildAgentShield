@@ -1,0 +1,73 @@
+# Browser Security Policy
+# Default: deny unknown URLs
+
+browser:
+  # Allowed URL schemes
+  allowed_schemes:
+    - https
+    - http   # allowed but flagged; HTTPS strongly preferred
+
+  # Blocked URL schemes (explicit)
+  blocked_schemes:
+    - javascript
+    - file
+    - data
+    - ftp
+    - blob
+    - vbscript
+
+  # Allowed ports (0 = all standard)
+  allowed_ports:
+    - 80
+    - 443
+    - 8080
+    - 8443
+
+  # Domain allowlist (when non-empty, only these domains are accessible)
+  domain_allowlist:
+    - "example.com"
+    - "wikipedia.org"
+    - "docs.python.org"
+    - "pypi.org"
+    - "github.com"
+    - "httpbin.org"   # useful for testing
+
+  # Domain blocklist (always blocked regardless of allowlist)
+  domain_blocklist:
+    - "169.254.169.254"    # AWS metadata
+    - "metadata.google.internal"
+    - "169.254.170.2"      # ECS metadata
+    - "localhost"
+    - "127.0.0.1"
+    - "0.0.0.0"
+
+  # Private CIDR ranges are always blocked (enforced in code, not just config)
+  block_private_ips: true
+  block_loopback: true
+  block_link_local: true
+  block_cloud_metadata: true
+
+  # Redirect limits
+  max_redirects: 5
+  validate_redirect_destination: true
+
+  # Session limits
+  max_sessions: 10
+  session_timeout_seconds: 120
+  navigation_timeout_seconds: 30
+  request_timeout_seconds: 15
+
+  # Action policies
+  actions:
+    search: allow
+    navigate: validate
+    extract: allow
+    click_link: validate
+    submit_form: require_policy_check
+    upload_file: require_approval
+    download_file: route_to_download_gateway
+    submit_payment: block_direct
+
+  # Content inspection
+  inspect_extracted_content: true
+  mark_content_untrusted: true

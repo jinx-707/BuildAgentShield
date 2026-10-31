@@ -1,0 +1,57 @@
+# AgentShield Online — Master Policy Configuration
+# All sub-policies are also loaded from their respective YAML files.
+# Secure defaults: unknown operations are DENIED.
+
+policy:
+  version: "1.0"
+  default_action: deny
+
+  allowed_operations:
+    - capability: browser
+      operation: search
+    - capability: browser
+      operation: navigate
+    - capability: browser
+      operation: extract
+    - capability: browser
+      operation: action
+    - capability: email
+      operation: search
+    - capability: email
+      operation: read
+    - capability: email
+      operation: draft
+    - capability: email
+      operation: send      # requires approval per email_policy.yaml
+    - capability: downloads
+      operation: request
+    - capability: downloads
+      operation: status
+    - capability: apis
+      operation: execute
+    - capability: mcp
+      operation: list_servers
+    - capability: mcp
+      operation: list_tools
+    - capability: mcp
+      operation: invoke
+    - capability: payments
+      operation: validate
+    - capability: payments
+      operation: create_order
+    - capability: payments
+      operation: verify
+    - capability: payments
+      operation: webhook
+    - capability: payments
+      operation: status
+    - capability: health
+      operation: check
+
+rate_limits:
+  default_requests_per_minute: 60
+  browser_requests_per_minute: 20
+  email_sends_per_hour: 10
+  download_requests_per_minute: 10
+  payment_requests_per_minute: 5
+  mcp_invocations_per_minute: 30

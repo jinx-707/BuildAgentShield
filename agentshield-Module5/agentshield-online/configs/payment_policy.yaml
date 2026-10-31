@@ -1,0 +1,79 @@
+# Payment Security Policy
+# WARNING: TEST MODE ONLY — no real money is processed.
+
+payments:
+  # Provider mode — MUST be "test"
+  provider_mode: test
+  default_provider: razorpay
+
+  # Currency
+  default_currency: INR
+  allowed_currencies:
+    - INR
+    - USD
+    - EUR
+    - GBP
+
+  # Transaction limits (in the smallest currency unit: paise for INR, cents for USD)
+  # 100000 paise = INR 1000
+  maximum_transaction_paise: 100000
+  maximum_transaction_usd_cents: 10000   # USD 100
+
+  # Human-readable limits (for display and documentation)
+  maximum_transaction_inr: 1000
+  maximum_transaction_usd: 100
+
+  # Daily limits per agent (paise / cents)
+  daily_limit_paise: 500000    # INR 5000
+  daily_limit_usd_cents: 50000 # USD 500
+
+  # Require approval above this amount (paise)
+  approval_threshold_paise: 50000   # INR 500
+
+  # Always require approval regardless of amount
+  require_approval: true
+
+  # Approval expires after (seconds)
+  approval_expires_seconds: 300
+
+  # Approved merchants (IDs from merchant registry)
+  approved_merchants:
+    - merchant_001
+    - merchant_002
+    - test_merchant
+
+  # Blocked merchants
+  blocked_merchants:
+    - blocked_merchant
+
+  # Idempotency key expiry (hours)
+  idempotency_key_ttl_hours: 24
+
+  # Order expiry (minutes)
+  order_expiry_minutes: 30
+
+  # No card data storage
+  store_card_numbers: false
+  store_cvv: false
+  store_otp: false
+
+merchants:
+  - id: merchant_001
+    name: "Test Merchant One"
+    status: active
+    domain: "merchant1.example.com"
+
+  - id: merchant_002
+    name: "Test Merchant Two"
+    status: active
+    domain: "merchant2.example.com"
+
+  - id: test_merchant
+    name: "AgentShield Test Merchant"
+    status: active
+    domain: "test.agentshield.local"
+
+  - id: blocked_merchant
+    name: "Blocked Merchant"
+    status: blocked
+    domain: "blocked.example.com"

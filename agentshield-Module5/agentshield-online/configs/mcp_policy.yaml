@@ -1,0 +1,39 @@
+# MCP Server and Tool Policy
+# Unknown servers and tools are DENIED.
+
+mcp_servers:
+  - id: "test_server"
+    name: "AgentShield Test MCP Server"
+    url: "http://localhost:8001"
+    transport: "http"
+    auth_type: "api_key"
+    credential_id: "MCP_TEST_SERVER_KEY"
+    connection_timeout_seconds: 10
+    tool_timeout_seconds: 30
+
+    # Only these tools may be invoked on this server
+    allowed_tools:
+      - "echo"
+      - "get_weather"
+      - "search_documents"
+
+    # Tools requiring explicit approval before invocation
+    approval_required_tools:
+      - "send_notification"
+      - "write_file"
+
+    # Tools that are blocked regardless of other rules
+    blocked_tools:
+      - "execute_code"
+      - "run_shell"
+      - "delete_files"
+      - "access_credentials"
+
+mcp_defaults:
+  connection_timeout_seconds: 30
+  tool_timeout_seconds: 60
+  treat_responses_as_untrusted: true
+  inspect_tool_responses: true
+  inspect_tool_descriptions: true
+  log_all_invocations: true
+  require_tls_for_remote: true

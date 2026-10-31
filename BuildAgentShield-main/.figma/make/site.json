@@ -1,0 +1,10 @@
+{
+  "description": "A security dashboard for AI agent teams to manage permissions, enforce policies, review approvals, simulate attacks, and audit tool activity.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

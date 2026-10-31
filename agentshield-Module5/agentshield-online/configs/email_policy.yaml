@@ -1,0 +1,59 @@
+# Email Security Policy
+# Default: deny sends to unapproved recipients
+
+email:
+  # Allowed sender identities (accounts the agent may send FROM)
+  allowed_sender_accounts:
+    - "agent@example.com"
+    - "notifications@example.com"
+
+  # Approved recipient addresses (explicit whitelist)
+  approved_recipients:
+    - "admin@example.com"
+    - "test@example.com"
+
+  # Approved recipient domains
+  approved_domains:
+    - "example.com"
+    - "trusted-partner.com"
+
+  # Blocked addresses (always denied regardless of other rules)
+  blocked_addresses:
+    - "spam@example.com"
+
+  # Allow external recipients (outside approved_domains)?
+  # When false, only approved_recipients and approved_domains are allowed.
+  allow_external_recipients: false
+
+  # Require human approval before sending
+  require_approval_for_send: true
+
+  # Approval expires after (seconds)
+  approval_expires_seconds: 300
+
+  # Data leakage prevention
+  dlp_check_enabled: true
+  dlp_check_body: true
+  dlp_check_subject: true
+  dlp_check_attachments: true
+  dlp_check_recipients: true
+
+  # Attachment restrictions
+  allowed_attachment_types:
+    - ".pdf"
+    - ".txt"
+    - ".png"
+    - ".jpg"
+    - ".csv"
+  max_attachment_size_mb: 10
+  max_attachments_per_email: 5
+
+  # OAuth scopes (least privilege)
+  gmail_scopes:
+    - "https://www.googleapis.com/auth/gmail.readonly"
+    - "https://www.googleapis.com/auth/gmail.send"
+    - "https://www.googleapis.com/auth/gmail.compose"
+
+  # Mark all incoming email as untrusted
+  mark_incoming_untrusted: true
+  inspect_incoming_content: true
